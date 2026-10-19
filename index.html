@@ -25,6 +25,7 @@
     <button class="tab" data-tab="portfolio">庫存</button>
     <button class="tab" data-tab="dividends">股息</button>
     <button class="tab" data-tab="analysis">市場分析</button>
+    <button class="tab" data-tab="settings">設置</button>
   </nav>
 
   <main>
@@ -107,11 +108,86 @@
       <div class="analysis-chart-wrap">
         <canvas id="analysis-canvas" width="800" height="300"></canvas>
         <div class="chart-legend">
-          <span class="dot dot-up"></span> 0050 趨勢
+          <span class="dot dot-up"></span> 加權趨勢
         </div>
       </div>
       <div class="analysis-notes" id="analysis-notes"></div>
     </section>
+
+    <section id="tab-settings" class="tab-panel">
+      <div class="section-head"><h2>設置</h2></div>
+
+      <div class="settings-block">
+        <div class="settings-block-head">
+          <h3>富果 API 設定</h3>
+          <span class="settings-desc">填入後立即生效，主行情來源；未設定時自動使用 Yahoo Finance</span>
+        </div>
+        <div class="settings-form">
+          <label class="settings-row">
+            <span class="settings-label">啟用富果 API</span>
+            <label class="toggle-wrap">
+              <input type="checkbox" id="cfg-fuguo-enabled">
+              <span class="toggle-slider"></span>
+            </label>
+          </label>
+
+          <label class="settings-row">
+            <span class="settings-label">API Endpoint（BaseUrl）</span>
+            <input type="text" id="cfg-fuguo-baseurl"
+                   placeholder="https://api.fuguo.tw/v1/quote/">
+          </label>
+
+          <label class="settings-row">
+            <span class="settings-label">API Key</span>
+            <input type="password" id="cfg-fuguo-key"
+                   placeholder="填入你的 API key"
+                   autocomplete="off">
+          </label>
+
+          <label class="settings-row">
+            <span class="settings-label">代號對應（JSON，選填）</span>
+            <textarea id="cfg-fuguo-symbols" rows="3"
+                      placeholder='例：{"0050":"TWSE:0050","00859":"TWSE:00859","^TWSE":"TWSE"}'></textarea>
+          </label>
+
+          <div class="settings-actions">
+            <button class="btn-primary" id="cfg-save">保存設定</button>
+            <button class="btn-ghost" id="cfg-test">測試連線</button>
+          </div>
+          <div class="settings-feedback" id="cfg-feedback"></div>
+        </div>
+      </div>
+
+      <div class="settings-block">
+        <div class="settings-block-head"><h3>資料來源優先順序</h3></div>
+        <div class="source-priority-list">
+          <div class="source-priority-item">
+            <span class="priority-num">1</span>
+            <span>富果 API</span>
+            <span class="source-badge fuguo" id="src-prio-fuguo">未設定</span>
+          </div>
+          <div class="source-priority-item">
+            <span class="priority-num">2</span>
+            <span>Yahoo Finance（免費）</span>
+            <span class="source-badge yahoo">備用</span>
+          </div>
+          <div class="source-priority-item">
+            <span class="priority-num">3</span>
+            <span>離線模擬數據</span>
+            <span class="source-badge mock">兜底</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-block">
+        <div class="settings-block-head"><h3>關於</h3></div>
+        <div class="settings-about">
+          <div class="about-row"><span class="about-label">版本</span><span>v1.1.0</span></div>
+          <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <footer class="footer">
