@@ -1,0 +1,13 @@
+{
+  "appId": "com.locopy.superetf",
+  "appName": "SuperETF",
+  "webDir": ".",
+  "backgroundColor": "#0d0f17",
+  "android": {
+    "backgroundColor": "#0d0f17",
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "http"
+  }
+}
