@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub">台股資產管理 v1.1.0</span>
+        <span class="sub">台股資產管理 v1.2.0</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -119,35 +119,45 @@
 
       <div class="settings-block">
         <div class="settings-block-head">
-          <h3>富果 API 設定</h3>
-          <span class="settings-desc">填入後立即生效，主行情來源；未設定時自動使用 Yahoo Finance</span>
+          <h3>富果 API 設定（Fugle Market Data v1.0）</h3>
+          <span class="settings-desc">啟用後立即生效，主行情來源（WebSocket 即時 + REST 降級）；未啟用時自動改用 Yahoo Finance</span>
         </div>
         <div class="settings-form">
           <label class="settings-row">
             <span class="settings-label">啟用富果 API</span>
             <label class="toggle-wrap">
-              <input type="checkbox" id="cfg-fuguo-enabled">
+              <input type="checkbox" id="cfg-fugle-enabled">
               <span class="toggle-slider"></span>
             </label>
           </label>
 
           <label class="settings-row">
-            <span class="settings-label">API Endpoint（BaseUrl）</span>
-            <input type="text" id="cfg-fuguo-baseurl"
-                   placeholder="https://api.fuguo.tw/v1/quote/">
+            <span class="settings-label">REST API Base URL</span>
+            <input type="text" id="cfg-fugle-resturl"
+                   placeholder="https://api.fugle.tw/marketdata/v1.0"
+                   value="https://api.fugle.tw/marketdata/v1.0">
+          </label>
+
+          <label class="settings-row">
+            <span class="settings-label">WebSocket LIVE URL</span>
+            <input type="text" id="cfg-fugle-wsurl"
+                   placeholder="wss://api.fugle.tw/marketdata/v1.0/stock/streaming"
+                   value="wss://api.fugle.tw/marketdata/v1.0/stock/streaming">
           </label>
 
           <label class="settings-row">
             <span class="settings-label">API Key</span>
-            <input type="password" id="cfg-fuguo-key"
+            <input type="password" id="cfg-fugle-key"
                    placeholder="填入你的 API key"
                    autocomplete="off">
           </label>
 
           <label class="settings-row">
-            <span class="settings-label">代號對應（JSON，選填）</span>
-            <textarea id="cfg-fuguo-symbols" rows="3"
-                      placeholder='例：{"0050":"TWSE:0050","00859":"TWSE:00859","^TWSE":"TWSE"}'></textarea>
+            <span class="settings-label">WS 斷線自動降級 REST</span>
+            <label class="toggle-wrap">
+              <input type="checkbox" id="cfg-fugle-ws-autofallback" checked>
+              <span class="toggle-slider"></span>
+            </label>
           </label>
 
           <div class="settings-actions">
@@ -163,7 +173,7 @@
         <div class="source-priority-list">
           <div class="source-priority-item">
             <span class="priority-num">1</span>
-            <span>富果 API</span>
+            <span>富果 API（Fugle）</span>
             <span class="source-badge fuguo" id="src-prio-fuguo">未設定</span>
           </div>
           <div class="source-priority-item">
@@ -182,7 +192,7 @@
       <div class="settings-block">
         <div class="settings-block-head"><h3>關於</h3></div>
         <div class="settings-about">
-          <div class="about-row"><span class="about-label">版本</span><span>v1.1.0</span></div>
+          <div class="about-row"><span class="about-label">版本</span><span>v1.2.0</span></div>
           <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
         </div>
       </div>
@@ -191,7 +201,7 @@
   </main>
 
   <footer class="footer">
-    <span>SuperETF v1.1.0 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
+    <span>SuperETF v1.2.0 · 個人開發版本 · 主：富果 API（WS + REST）/ 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
 <script src="app.js"></script>
