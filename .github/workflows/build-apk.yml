@@ -9,6 +9,9 @@ jobs:
   apk:
     name: Build debug APK
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      GRADLE_OPTS: -Dorg.gradle.daemon=false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,8 +24,17 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Download Android cmdline-tools
+        run: |
+          curl -sSLo cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+          unzip -q cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
+          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" 2>/dev/null || true
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+
+      - name: Install Android build targets
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Generate Capacitor android platform
         run: npx cap add android
@@ -33,7 +45,6 @@ jobs:
       - name: Build debug APK
         working-directory: android
         run: |
-          yes | sdkmanager "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
 
