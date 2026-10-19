@@ -2,11 +2,118 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>SuperETF 台股資產管理</title>
+<link rel="stylesheet" href="styles.css">
 </head>
-<body style="background:#0d0f17;color:#eceff6;font-family:'Noto Sans TC',sans-serif">
-<h1>SuperETF</h1>
-<p>台股指數與 ETF 即時資產管理儀表板（雛形）。行情、庫存、股息、分析與損益行情牆模組將逐步上架。</p>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <div>
+        <h1>SuperETF</h1>
+        <span class="sub">台股資產管理</span>
+      </div>
+    </div>
+    <div class="session-badge" id="session-badge">盤前準備中</div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="live">即時行情</button>
+    <button class="tab" data-tab="pnl">損益牆</button>
+    <button class="tab" data-tab="portfolio">庫存</button>
+    <button class="tab" data-tab="dividends">股息</button>
+    <button class="tab" data-tab="analysis">市場分析</button>
+  </nav>
+
+  <main>
+    <section id="tab-live" class="tab-panel active">
+      <div class="section-head">
+        <h2>即時行情</h2>
+        <div class="filter-chips">
+          <button class="chip active" data-type="all">全部</button>
+          <button class="chip" data-type="index">指數</button>
+          <button class="chip" data-type="etf">ETF</button>
+          <button class="chip" data-type="stock">個股</button>
+        </div>
+      </div>
+      <div class="live-grid" id="live-grid"></div>
+    </section>
+
+    <section id="tab-pnl" class="tab-panel">
+      <div class="section-head"><h2>損益行情牆</h2></div>
+      <div class="pnl-summary" id="pnl-summary"></div>
+      <div class="pnl-wall" id="pnl-wall"></div>
+    </section>
+
+    <section id="tab-portfolio" class="tab-panel">
+      <div class="section-head">
+        <h2>庫存管理</h2>
+        <button class="btn-primary" id="btn-add-holding">＋ 新增持倉</button>
+      </div>
+      <div id="add-holding-form" class="form-panel hidden">
+        <div class="form-grid">
+          <label>代號/ETF<input id="fh-code" placeholder="例：0050 或 2330"></label>
+          <label>名稱<input id="fh-name" placeholder="例：元大50"></label>
+          <label>持有股數<input id="fh-qty" type="number" min="0" placeholder="0"></label>
+          <label>平均成本<input id="fh-cost" type="number" step="0.01" placeholder="0.00"></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="fh-save">保存</button>
+          <button class="btn-ghost" id="fh-cancel">取消</button>
+        </div>
+      </div>
+      <div class="portfolio-table-wrap">
+        <table class="portfolio-table">
+          <thead>
+            <tr><th>代號</th><th>名稱</th><th>股數</th><th>成本</th><th>現價</th><th>損益</th><th>占比</th><th></th></tr>
+          </thead>
+          <tbody id="portfolio-body"></tbody>
+        </table>
+      </div>
+      <div class="transactions" id="transactions"></div>
+    </section>
+
+    <section id="tab-dividends" class="tab-panel">
+      <div class="section-head">
+        <h2>股息管理</h2>
+        <button class="btn-primary" id="btn-add-dividend">＋ 新增股息</button>
+      </div>
+      <div id="add-dividend-form" class="form-panel hidden">
+        <div class="form-grid">
+          <label>代號<input id="fd-code" placeholder="例：0050"></label>
+          <label>名稱<input id="fd-name" placeholder="例：元大50"></label>
+          <label>股數<input id="fd-qty" type="number" min="0"></label>
+          <label>每股股息<input id="fd-amount" type="number" step="0.01"></label>
+          <label>除權日<input id="fd-date" type="date"></label>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="fd-save">保存</button>
+          <button class="btn-ghost" id="fd-cancel">取消</button>
+        </div>
+      </div>
+      <div class="dividend-summary" id="dividend-summary"></div>
+      <div class="dividend-list" id="dividend-list"></div>
+    </section>
+
+    <section id="tab-analysis" class="tab-panel">
+      <div class="section-head"><h2>市場分析</h2></div>
+      <div class="analysis-metrics" id="analysis-metrics"></div>
+      <div class="analysis-chart-wrap">
+        <canvas id="analysis-canvas" width="800" height="300"></canvas>
+        <div class="chart-legend">
+          <span class="dot dot-up"></span> 0050 趨勢（近30日模擬）
+        </div>
+      </div>
+      <div class="analysis-notes" id="analysis-notes"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>SuperETF · 個人開發版本 · 行情為模擬數據（每 2 秒更新）</span>
+  </footer>
+</div>
+<script src="app.js"></script>
 </body>
 </html>
