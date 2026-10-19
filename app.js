@@ -1,27 +1,47 @@
 (() => {
 'use strict';
 
-// ---------- Config ----------
-// 富果API：填入 endpoint 與 key 後即會優先使用；留空則跳過，自動落到 Yahoo / 模擬。
-const FUGUO_API = {
-  enabled: false,
-  baseUrl: '',   // 例：'https://api.fuguo.tw/v1/quote/'
-  apiKey: '',    // 你的 API key
-  // 對應表：app code → 富果 symbol
-  symbols: {},   // 例：{ '0050': 'TWSE:0050', '^TWSE': 'TWSE' }
-};
-
 const VERSION = '1.1.0';
+
+// ---------- API 設定（存於 localStorage，由「設置」tab 管理）----------
+const LS_API  = 'setf_api_config';
+const API_DEFAULTS = {
+  fuguo: {
+    enabled:  false,
+    baseUrl:  '',
+    apiKey:   '',
+    symbols:  {},   // 例：{ '0050': 'TWSE:0050', '^TWSE': 'TWSE' }
+  },
+};
+function loadApiConfig() {
+  try {
+    const raw = localStorage.getItem(LS_API);
+    if (!raw) return structuredClone(API_DEFAULTS);
+    const saved = JSON.parse(raw);
+    return {
+      fuguo: {
+        enabled:  !!saved?.fuguo?.enabled,
+        baseUrl:  saved?.fuguo?.baseUrl  || '',
+        apiKey:   saved?.fuguo?.apiKey   || '',
+        symbols:  saved?.fuguo?.symbols  || {},
+      },
+    };
+  } catch { return structuredClone(API_DEFAULTS); }
+}
+function saveApiConfig(cfg) {
+  try { localStorage.setItem(LS_API, JSON.stringify(cfg)); } catch {}
+}
+let apiCfg = loadApiConfig();
 
 // ---------- Seed data ----------
 const SEED_QUOTES = [
-  { code: '^TWSE',  name: '加權指數',     type: 'index', base: 23500, drift: 0.001, yahoo: '^TWSE'  },
-  { code: '0050',   name: '元大50',       type: 'etf',   base: 18.35,  drift: 0.0005, yahoo: '0050.TW'  },
-  { code: '0056',   name: '國泰AP',       type: 'etf',   base: 31.50,  drift: 0.0004, yahoo: '0056.TW'  },
-  { code: '00859',  name: '元大S&P500',   type: 'etf',   base: 15.80,  drift: 0.0006, yahoo: '00859.TW' },
-  { code: '2884',   name: '聯電',         type: 'stock', base: 42.50,  drift: 0.0008, yahoo: '2884.TW'  },
-  { code: '2330',   name: '台積電',       type: 'stock', base: 1010,   drift: 0.0004, yahoo: '2330.TW'  },
-  { code: '6605',   name: '台達電',       type: 'stock', base: 485,    drift: 0.0009, yahoo: '6605.TW'  },
+  { code: '^TWSE',  name: '加權指數',     type: 'index', base: 23500, drift: 0.001,  yahoo: '^TWSE'   },
+  { code: '0050',   name: '元大50',       type: 'etf',   base: 18.35, drift: 0.0005, yahoo: '0050.TW'  },
+  { code: '0056',   name: '國泰AP',       type: 'etf',   base: 31.50, drift: 0.0004, yahoo: '0056.TW'  },
+  { code: '00859',  name: '元大S&P500',   type: 'etf',   base: 15.80, drift: 0.0006, yahoo: '00859.TW' },
+  { code: '2884',   name: '聯電',         type: 'stock', base: 42.50, drift: 0.0008, yahoo: '2884.TW'  },
+  { code: '2330',   name: '台積電',       type: 'stock', base: 1010,  drift: 0.0004, yahoo: '2330.TW'  },
+  { code: '6605',   name: '台達電',       type: 'stock', base: 485,   drift: 0.0009, yahoo: '6605.TW'  },
 ];
 
 const SEED_HOLDINGS = [
@@ -69,7 +89,7 @@ class Quote {
     const shock = (Math.random() - 0.5) * this.base * 0.002 + this.drift * this.base;
     this.price = Math.max(this.base * 0.5, this.price + shock);
     this.high = Math.max(this.high, this.price);
-    this.low  = Math.min(this.low, this.price);
+    this.low  = Math.min(this.low,  this.price);
     this._hist.push(this.price); if (this._hist.length > 60) this._hist.shift();
   }
   applyReal(price, open) {
@@ -99,8 +119,8 @@ const SOURCE_LABELS = {
 };
 
 const MarketData = {
-  source: 'mock',       // 目前生效來源
-  lastUpdated: 0,       // 最後成功抓取時間
+  source: 'mock',
+  lastUpdated: 0,
 
   setSource(name) {
     this.source = name;
@@ -113,30 +133,33 @@ const MarketData = {
     if (label && this.lastUpdated) {
       label.textContent = '更新於 ' + new Date(this.lastUpdated).toLocaleTimeString('zh-TW', { hour12: false });
     }
+    updateSourcePriorityBadges();
   },
 
-  // 主：富果API
+  // 主：富果API（依 apiCfg.fuguo 動態判斷）
   async fetchFuguo() {
-    if (!FUGUO_API.enabled || !FUGUO_API.baseUrl) return null;
+    const f = apiCfg.fuguo;
+    if (!f.enabled || !f.baseUrl) return 0;
     try {
-      const targets = quotes.filter(q => FUGUO_API.symbols[q.code]);
-      if (!targets.length) return null;
+      const targets = quotes.filter(q => f.symbols[q.code]);
+      if (!targets.length) return 0;
       const batch = await Promise.all(targets.map(async q => {
-        const sym = FUGUO_API.symbols[q.code];
-        const url = FUGUO_API.baseUrl + encodeURIComponent(sym) + (FUGUO_API.apiKey ? ('?key=' + encodeURIComponent(FUGUO_API.apiKey)) : '');
-        const r = await fetch(url, { headers: FUGUO_API.apiKey ? { 'X-Api-Key': FUGUO_API.apiKey } : {} });
+        const sym = f.symbols[q.code];
+        const sep = f.baseUrl.includes('?') ? '&' : '?';
+        const url = f.baseUrl + encodeURIComponent(sym)
+          + (f.apiKey ? (sep + 'key=' + encodeURIComponent(f.apiKey)) : '');
+        const headers = f.apiKey ? { 'X-Api-Key': f.apiKey } : {};
+        const r = await fetch(url, { headers });
         if (!r.ok) throw new Error('fuguo ' + r.status);
         const data = await r.json();
-        // 假設格式：{ price, open } 或 { quote: {...} } — 依實際 API 調整
-        const p = (data.price ?? data.quote?.price ?? data.last ?? null);
-        const o = (data.open  ?? data.quote?.open  ?? data.open ?? p);
+        const p = data.price ?? data.quote?.price ?? data.last ?? null;
+        const o = data.open  ?? data.quote?.open  ?? data.open ?? p;
         return p ? { code: q.code, price: p, open: o } : null;
       }));
       const valid = batch.filter(Boolean);
-      if (!valid.length) return null;
       valid.forEach(v => { const q = quoteMap[v.code]; if (q) q.applyReal(v.price, v.open); });
       return valid.length;
-    } catch (e) { console.warn('[fuguo]', e); return null; }
+    } catch (e) { console.warn('[fuguo]', e); return 0; }
   },
 
   // 備：Yahoo Finance
@@ -163,20 +186,16 @@ const MarketData = {
     } catch (e) { console.warn('[yahoo]', e); return 0; }
   },
 
-  // 同步：嘗試 富果 → Yahoo，回傳 'fuguo' | 'yahoo' | 'mock'
   async sync() {
     const fu = await this.fetchFuguo();
     if (fu > 0) { this.setSource('fuguo'); this.lastUpdated = Date.now(); return 'fuguo'; }
-
     const yh = await this.fetchYahoo();
     if (yh > 0)  { this.setSource('yahoo'); this.lastUpdated = Date.now(); return 'yahoo'; }
-
     this.setSource('mock');
     return 'mock';
   },
 };
 
-// 每 30s 同步（Yahoo 免費層 rate-limit 考量）
 async function marketLoop() {
   await MarketData.sync();
   renderLive();
@@ -207,6 +226,7 @@ document.querySelectorAll('.tab').forEach(btn => {
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'analysis') drawAnalysis();
+    if (btn.dataset.tab === 'settings') loadSettingsForm();
   });
 });
 
@@ -264,7 +284,6 @@ function renderPnl() {
 
   wall.innerHTML = tiles.map(({ h, price, pnl, pnlPct }) => {
     const q = quoteMap[h.code];
-    const spark = q ? q._hist.slice(-30) : [];
     const sparkCanvas = `<canvas class="spark" data-code="${h.code}" width="200" height="34"></canvas>`;
     return `<div class="pnl-tile">
       <div class="head"><span>${h.code} ${h.name}</span><span>${h.qty} 股</span></div>
@@ -306,7 +325,7 @@ document.getElementById('fh-cancel').addEventListener('click', () => {
 document.getElementById('fh-save').addEventListener('click', () => {
   const code = document.getElementById('fh-code').value.trim();
   const name = document.getElementById('fh-name').value.trim();
-  const qty  = parseInt(document.getElementById('fh-qty').value) || 0;
+  const qty  = parseInt(document.getElementById('fh-qty').value)   || 0;
   const cost = parseFloat(document.getElementById('fh-cost').value) || 0;
   if (!code || !qty) return alert('請填入代號與股數');
   holdings.push({ code, name: name || code, qty, cost });
@@ -413,13 +432,11 @@ function drawAnalysis() {
   const range = max - min || 1;
   const up = data[data.length - 1] >= data[0];
 
-  // 網格
   ctx.strokeStyle = '#2a3042'; ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = (h - 40) * i / 4 + 20;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
-  // 曲線
   ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -430,8 +447,8 @@ function drawAnalysis() {
   });
   ctx.stroke();
 
-  const vwap    = data.reduce((s, v) => s + v, 0) / data.length;
-  const dayRng  = (t.high - t.low) / t.open;
+  const vwap   = data.reduce((s, v) => s + v, 0) / data.length;
+  const dayRng = (t.high - t.low) / t.open;
   document.getElementById('analysis-metrics').innerHTML = `
     <div class="metric"><div class="label">加權開盤</div><div class="value">${fmt(t.open)}</div></div>
     <div class="metric"><div class="label">現價</div><div class="value ${cls(t.pctChg)}">${fmt(t.price)}</div></div>
@@ -448,6 +465,100 @@ function drawAnalysis() {
     (h0050 ? `• 0050 持倉 ${h0050.qty.toLocaleString()} 股，成本 ${fmt(h0050.cost)}。` : '');
 }
 
+// ============================================================
+// Settings tab — API 設定存取
+// ============================================================
+function loadSettingsForm() {
+  const f = apiCfg.fuguo;
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
+  setVal('cfg-fuguo-baseurl',    f.baseUrl);
+  setVal('cfg-fuguo-key',        f.apiKey);
+  setVal('cfg-fuguo-symbols',    Object.keys(f.symbols).length ? JSON.stringify(f.symbols, null, 2) : '');
+  const chk = document.getElementById('cfg-fuguo-enabled');
+  if (chk) chk.checked = f.enabled;
+  updateSourcePriorityBadges();
+}
+
+function updateSourcePriorityBadges() {
+  const fuBadge = document.getElementById('src-prio-fuguo');
+  if (fuBadge) {
+    if (apiCfg.fuguo.enabled && apiCfg.fuguo.baseUrl) {
+      fuBadge.textContent = '已設定';
+      fuBadge.className   = 'source-badge fuguo';
+    } else {
+      fuBadge.textContent = '未設定';
+      fuBadge.className   = 'source-badge mock';
+    }
+  }
+}
+
+function parseSymbolsJson(raw) {
+  if (!raw || !raw.trim()) return {};
+  try {
+    const obj = JSON.parse(raw);
+    if (typeof obj !== 'object' || Array.isArray(obj)) throw new Error();
+    return obj;
+  } catch {
+    throw new Error('代號對應格式錯誤，請使用 JSON 物件，例如 {"0050":"TWSE:0050"}');
+  }
+}
+
+function setFeedback(msg, ok) {
+  const el = document.getElementById('cfg-feedback');
+  el.textContent = msg;
+  el.className = 'settings-feedback ' + (ok ? 'ok' : 'err');
+}
+
+document.getElementById('cfg-save').addEventListener('click', () => {
+  const f = apiCfg.fuguo;
+  const enabled = document.getElementById('cfg-fuguo-enabled').checked;
+  const baseUrl = document.getElementById('cfg-fuguo-baseurl').value.trim();
+  const apiKey  = document.getElementById('cfg-fuguo-key').value.trim();
+  let symbols = {};
+  try {
+    symbols = parseSymbolsJson(document.getElementById('cfg-fuguo-symbols').value);
+  } catch (e) {
+    setFeedback(e.message, false);
+    return;
+  }
+
+  apiCfg = { fuguo: { enabled, baseUrl, apiKey, symbols } };
+  saveApiConfig(apiCfg);
+
+  const summary = enabled && baseUrl
+    ? '已保存：富果API 已啟用，即時行情將優先使用富果來源'
+    : '已保存：富果API 未啟用，即時行情將使用 Yahoo Finance';
+  setFeedback(summary, true);
+  updateSourcePriorityBadges();
+  // 立即重新同步一次
+  MarketData.sync().then(src => {
+    setFeedback(summary + '（目前來源：' + (SOURCE_LABELS[src] || src) + '）', true);
+  });
+});
+
+document.getElementById('cfg-test').addEventListener('click', async () => {
+  const f = apiCfg.fuguo;
+  if (!f.baseUrl) { setFeedback('請先填入 API Endpoint', false); return; }
+  setFeedback('測試中…', true);
+  try {
+    const testCode = Object.keys(f.symbols)[0] || '0050';
+    const sym = f.symbols[testCode] || testCode;
+    const sep = f.baseUrl.includes('?') ? '&' : '?';
+    const url = f.baseUrl + encodeURIComponent(sym)
+      + (f.apiKey ? (sep + 'key=' + encodeURIComponent(f.apiKey)) : '');
+    const r = await fetch(url, { headers: f.apiKey ? { 'X-Api-Key': f.apiKey } : {} });
+    if (r.ok) {
+      const data = await r.json();
+      const p = data.price ?? data.quote?.price ?? data.last ?? '（200 OK）';
+      setFeedback('✅ 連線成功：' + testCode + ' 回應 ' + JSON.stringify(p), true);
+    } else {
+      setFeedback('❌ 連線失敗：HTTP ' + r.status, false);
+    }
+  } catch (e) {
+    setFeedback('❌ 連線失敗：' + e.message, false);
+  }
+});
+
 // ---------- Tick loop（離線模擬時啟用；有真實資料時跳過 random-walk） ----------
 setInterval(() => {
   if (MarketData.source === 'mock') {
@@ -461,8 +572,6 @@ setInterval(() => {
 
 // ---------- Init ----------
 renderLive(); renderPnl(); renderPortfolio(); renderDividends();
-
-// 顯示版本號（footer 寫死 v1.1.0；這裡再確認一次）
 console.log('SuperETF v' + VERSION);
 
 })();
