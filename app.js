@@ -1,29 +1,33 @@
 (() => {
 'use strict';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 // ---------- API 設定（存於 localStorage，由「設置」tab 管理）----------
-const LS_API  = 'setf_api_config';
+const LS_API  = 'setf_api_config_v2';
 const API_DEFAULTS = {
-  fuguo: {
-    enabled:  false,
-    baseUrl:  '',
-    apiKey:   '',
-    symbols:  {},   // 例：{ '0050': 'TWSE:0050', '^TWSE': 'TWSE' }
+  fugle: {
+    enabled: false,
+    restUrl: '',
+    wsUrl: '',
+    apiKey: '',
+    wsAutoFallback: true,
   },
 };
 function loadApiConfig() {
   try {
-    const raw = localStorage.getItem(LS_API);
+    const raw = localStorage.getItem(LS_API) || localStorage.getItem('setf_api_config');
     if (!raw) return structuredClone(API_DEFAULTS);
     const saved = JSON.parse(raw);
+    // 相容舊版 setf_api_config（fuguo 欄位）
+    const src = saved?.fugle ?? saved?.fuguo ?? {};
     return {
-      fuguo: {
-        enabled:  !!saved?.fuguo?.enabled,
-        baseUrl:  saved?.fuguo?.baseUrl  || '',
-        apiKey:   saved?.fuguo?.apiKey   || '',
-        symbols:  saved?.fuguo?.symbols  || {},
+      fugle: {
+        enabled:        !!src.enabled,
+        restUrl:        src.restUrl   || src.baseUrl || '',
+        wsUrl:          src.wsUrl     || '',
+        apiKey:         src.apiKey    || '',
+        wsAutoFallback: src.wsAutoFallback !== undefined ? !!src.wsAutoFallback : true,
       },
     };
   } catch { return structuredClone(API_DEFAULTS); }
@@ -33,15 +37,20 @@ function saveApiConfig(cfg) {
 }
 let apiCfg = loadApiConfig();
 
+// 富果 API 預設端點
+const FUGLE_REST_DEFAULT = 'https://api.fugle.tw/marketdata/v1.0';
+const FUGLE_WS_DEFAULT   = 'wss://api.fugle.tw/marketdata/v1.0/stock/streaming';
+
 // ---------- Seed data ----------
+// code: 系統內部代號；fugleSymbol: 富果代碼（^TSE=加權指數）；yahoo: Yahoo Finance 代號
 const SEED_QUOTES = [
-  { code: '^TWSE',  name: '加權指數',     type: 'index', base: 23500, drift: 0.001,  yahoo: '^TWSE'   },
-  { code: '0050',   name: '元大50',       type: 'etf',   base: 18.35, drift: 0.0005, yahoo: '0050.TW'  },
-  { code: '0056',   name: '國泰AP',       type: 'etf',   base: 31.50, drift: 0.0004, yahoo: '0056.TW'  },
-  { code: '00859',  name: '元大S&P500',   type: 'etf',   base: 15.80, drift: 0.0006, yahoo: '00859.TW' },
-  { code: '2884',   name: '聯電',         type: 'stock', base: 42.50, drift: 0.0008, yahoo: '2884.TW'  },
-  { code: '2330',   name: '台積電',       type: 'stock', base: 1010,  drift: 0.0004, yahoo: '2330.TW'  },
-  { code: '6605',   name: '台達電',       type: 'stock', base: 485,   drift: 0.0009, yahoo: '6605.TW'  },
+  { code: '^TSE',  name: '加權指數',     type: 'index', base: 23500, drift: 0.001,  fugleSymbol: '^TSE',  yahoo: '^TWSE'   },
+  { code: '0050',  name: '元大50',       type: 'etf',   base: 18.35, drift: 0.0005, fugleSymbol: '0050',  yahoo: '0050.TW'  },
+  { code: '0056',  name: '國泰AP',       type: 'etf',   base: 31.50, drift: 0.0004, fugleSymbol: '0056',  yahoo: '0056.TW'  },
+  { code: '00859', name: '元大S&P500',   type: 'etf',   base: 15.80, drift: 0.0006, fugleSymbol: '00859', yahoo: '00859.TW' },
+  { code: '2884',  name: '聯電',         type: 'stock', base: 42.50, drift: 0.0008, fugleSymbol: '2884',  yahoo: '2884.TW'  },
+  { code: '2330',  name: '台積電',       type: 'stock', base: 1010,  drift: 0.0004, fugleSymbol: '2330',  yahoo: '2330.TW'  },
+  { code: '6605',  name: '台達電',       type: 'stock', base: 485,   drift: 0.0009, fugleSymbol: '6605',  yahoo: '6605.TW'  },
 ];
 
 const SEED_HOLDINGS = [
@@ -76,13 +85,16 @@ save(LS.holdings, holdings); save(LS.dividends, dividends); save(LS.txns, txns);
 
 // ---------- Quote ----------
 class Quote {
-  constructor({ code, name, type, base, drift, yahoo }) {
+  constructor({ code, name, type, base, drift, yahoo, fugleSymbol }) {
     this.code = code; this.name = name; this.type = type;
     this.yahooSymbol = yahoo || (code.endsWith('.TW') ? code : code + '.TW');
+    this.fugleSymbol = fugleSymbol || code;
     this.open = base * (1 + (Math.random() - 0.5) * 0.004);
     this.price = this.open;
     this.base = base; this.drift = drift;
     this.high = this.open; this.low = this.open;
+    this.prevClose = null;
+    this.avgPrice = null;
     this._hist = Array.from({ length: 30 }, (_, i) => base * (1 + Math.sin(i / 5) * 0.01 + (Math.random() - 0.5) * 0.005));
   }
   tick() {
@@ -92,35 +104,59 @@ class Quote {
     this.low  = Math.min(this.low,  this.price);
     this._hist.push(this.price); if (this._hist.length > 60) this._hist.shift();
   }
-  applyReal(price, open) {
-    if (open) this.open = open;
+  applyReal(price, open, high, low, prevClose, avgPrice) {
+    if (open  != null) this.open = open;
+    if (high   != null) this.high = high;
+    if (low    != null) this.low  = low;
+    if (prevClose != null) this.prevClose = prevClose;
+    if (avgPrice  != null) this.avgPrice = avgPrice;
     this.price = price;
-    this.high = Math.max(this.high, price);
-    this.low  = Math.min(this.low,  price);
     this._hist.push(price); if (this._hist.length > 60) this._hist.shift();
   }
-  get pctChg() { return (this.price - this.open) / this.open; }
+  get pctChg() {
+    if (this.prevClose != null && this.prevClose > 0) {
+      return (this.price - this.prevClose) / this.prevClose;
+    }
+    return this.open > 0 ? (this.price - this.open) / this.open : 0;
+  }
 }
 
 const quotes   = SEED_QUOTES.map(q => new Quote(q));
 const quoteMap = Object.fromEntries(quotes.map(q => [q.code, q]));
+const quoteByFugleSymbol = Object.fromEntries(quotes.map(q => [q.fugleSymbol, q]));
+const quoteByYahooSymbol = Object.fromEntries(quotes.map(q => [q.yahooSymbol, q]));
 
 function fmt(n, digits = 2) { return Number(n).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
 function pctFmt(p) { return (p >= 0 ? '+' : '') + (p * 100).toFixed(2) + '%'; }
 function cls(p) { return p > 0.0005 ? 'up' : p < -0.0005 ? 'down' : 'flat'; }
 
 // ============================================================
-// MarketData service — 富果API 主 / Yahoo 備 / 離線模擬兜底
+// MarketData service — 富果API（REST 主 / WebSocket 即時）/ Yahoo 備 / 離線模擬兜底
 // ============================================================
 const SOURCE_LABELS = {
-  fuguo: '來源：富果API',
-  yahoo: '來源：Yahoo Finance',
-  mock:  '模擬數據（離線）',
+  fugle_ws:   '來源：富果 API（WebSocket）',
+  fugle_rest: '來源：富果 API（REST）',
+  yahoo:      '來源：Yahoo Finance',
+  mock:       '模擬數據（離線）',
 };
+
+// 依代號找對應的富果 symbol（指數走 indices 頻道）
+function fugleTarget(q) {
+  const s = q.fugleSymbol;
+  return q.type === 'index'
+    ? { channel: 'indices', symbol: s }
+    : { channel: 'aggregates', symbol: s };
+}
 
 const MarketData = {
   source: 'mock',
   lastUpdated: 0,
+  _ws: null,
+  _wsAuthenticated: false,
+  _wsSubscribed: false,
+  _wsRetryUntil: 0,
+  _restTimer: null,
+  _wsState: 'idle',
 
   setSource(name) {
     this.source = name;
@@ -136,310 +172,419 @@ const MarketData = {
     updateSourcePriorityBadges();
   },
 
-  // 主：富果API（依 apiCfg.fuguo 動態判斷）
-  async fetchFuguo() {
-    const f = apiCfg.fuguo;
-    if (!f.enabled || !f.baseUrl) return 0;
-    try {
-      const targets = quotes.filter(q => f.symbols[q.code]);
-      if (!targets.length) return 0;
-      const batch = await Promise.all(targets.map(async q => {
-        const sym = f.symbols[q.code];
-        const sep = f.baseUrl.includes('?') ? '&' : '?';
-        const url = f.baseUrl + encodeURIComponent(sym)
-          + (f.apiKey ? (sep + 'key=' + encodeURIComponent(f.apiKey)) : '');
-        const headers = f.apiKey ? { 'X-Api-Key': f.apiKey } : {};
-        const r = await fetch(url, { headers });
-        if (!r.ok) throw new Error('fuguo ' + r.status);
+  // ---------- 富果 REST：intraday/quote ----------
+  async fetchFuguoRest() {
+    const f = apiCfg.fugle;
+    if (!f.enabled || !f.apiKey) return 0;
+    const restUrl = f.restUrl || FUGLE_REST_DEFAULT;
+    const base = restUrl.replace(/\/$/, '');
+    let ok = 0;
+
+    for (const q of quotes) {
+      const target = fugleTarget(q);
+      const url = base + '/stock/intraday/quote/' + encodeURIComponent(target.symbol);
+      try {
+        const r = await fetch(url, { headers: { 'X-API-KEY': f.apiKey } });
+        if (!r.ok) {
+          if (r.status === 404 || r.status === 400) continue;
+          throw new Error('HTTP ' + r.status);
+        }
         const data = await r.json();
-        const p = data.price ?? data.quote?.price ?? data.last ?? null;
-        const o = data.open  ?? data.quote?.open  ?? data.open ?? p;
-        return p ? { code: q.code, price: p, open: o } : null;
-      }));
-      const valid = batch.filter(Boolean);
-      valid.forEach(v => { const q = quoteMap[v.code]; if (q) q.applyReal(v.price, v.open); });
-      return valid.length;
-    } catch (e) { console.warn('[fuguo]', e); return 0; }
-  },
-
-  // 備：Yahoo Finance
-  async fetchYahoo() {
-    try {
-      const symbols = quotes.map(q => q.yahooSymbol);
-      const url = 'https://query1.finance.yahoo.com/v8/finance/spark?symbols=' + symbols.join(',')
-        + '&range=1d&interval=1m';
-      const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
-      if (!r.ok) throw new Error('yahoo ' + r.status);
-      const data = await r.json();
-      const result = data.result || [];
-      let count = 0;
-      for (const item of result) {
-        const q = quotes.find(x => x.yahooSymbol === item.symbol);
-        if (!q || !item.price || !Array.isArray(item.price.items)) continue;
-        const last = item.price.items[item.price.items.length - 1];
-        if (last == null) continue;
-        q.applyReal(last, item.open);
-        count++;
+        // 富果 quote 回傳扁平結構：symbol, openPrice, lastPrice, highPrice, lowPrice, previousClose, avgPrice...
+        const price = data.lastPrice ?? data.closePrice ?? data.price;
+        if (price == null) continue;
+        q.applyReal(
+          price,
+          data.openPrice,
+          data.highPrice,
+          data.lowPrice,
+          data.previousClose,
+          data.avgPrice
+        );
+        if (data.name) q.name = data.name;
+        ok++;
+      } catch (e) {
+        console.warn('[SuperETF] 富果 REST 拉取 ' + target.symbol + ' 失敗：', e.message);
       }
-      if (count) this.lastUpdated = Date.now();
-      return count;
-    } catch (e) { console.warn('[yahoo]', e); return 0; }
+    }
+
+    if (ok > 0) {
+      this.lastUpdated = Date.now();
+      this.setSource('fugle_rest');
+    }
+    return ok;
   },
 
+  // ---------- 富果 WebSocket：aggregates + indices 即時 ----------
+  connectFuguoWs() {
+    const f = apiCfg.fugle;
+    if (!f.enabled || !f.apiKey) return;
+    // 重連節流：斷線後 30 秒內不再嘗試
+    if (Date.now() < this._wsRetryUntil) return;
+
+    const wsUrl = f.wsUrl || FUGLE_WS_DEFAULT;
+    let ws;
+    try { ws = new WebSocket(wsUrl); }
+    catch (e) {
+      console.warn('[SuperETF] WebSocket 初始化失敗：', e.message);
+      this._wsState = 'idle';
+      this._wsRetryUntil = Date.now() + 30000;
+      return;
+    }
+    this._ws = ws;
+    this._wsAuthenticated = false;
+    this._wsSubscribed = false;
+    this._wsState = 'connecting';
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ event: 'auth', data: { apikey: f.apiKey } }));
+    };
+
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+
+      switch (msg.event) {
+        case 'authenticated':
+          this._wsAuthenticated = true;
+          this._wsState = 'authed';
+          this._subscribeAll(ws);
+          break;
+        case 'error':
+          console.warn('[SuperETF] 富果 WS error：', msg.data?.message || msg.data);
+          break;
+        case 'heartbeat':
+        case 'pong':
+          break;
+        case 'data':
+          this._onWsData(msg);
+          break;
+      }
+    };
+
+    ws.onclose = () => {
+      this._wsState = 'closed';
+      console.warn('[SuperETF] 富果 WebSocket 關閉，30 秒後重連');
+      this._wsRetryUntil = Date.now() + 30000;
+      if (this._restTimer) clearInterval(this._restTimer);
+      this._startRestFallback();
+    };
+
+    ws.onerror = () => { /* onclose 會觸發 */ };
+
+    // 30 秒 heartbeat ping
+    this._wsPingTimer = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN && this._wsAuthenticated) {
+        ws.send(JSON.stringify({ event: 'ping' }));
+      }
+    }, 30000);
+  },
+
+  _subscribeAll(ws) {
+    for (const q of quotes) {
+      const t = fugleTarget(q);
+      ws.send(JSON.stringify({
+        event: 'subscribe',
+        data: { channel: t.channel, symbol: t.symbol },
+      }));
+    }
+    this._wsSubscribed = true;
+    this.setSource('fugle_ws');
+  },
+
+  _onWsData(msg) {
+    const d = msg.data;
+    if (!d || !d.symbol) return;
+    const q = quoteByFugleSymbol[d.symbol];
+    if (!q) return;
+
+    if (msg.channel === 'indices') {
+      // indices 頻道：d.index = 現價；d.previousClose = 前收
+      q.applyReal(d.index, d.openPrice, d.highPrice, d.lowPrice, d.previousClose, null);
+    } else if (msg.channel === 'aggregates') {
+      // aggregates 頻道：完整 OHLC + 五檔
+      q.applyReal(
+        d.lastPrice ?? d.closePrice,
+        d.openPrice,
+        d.highPrice,
+        d.lowPrice,
+        d.previousClose,
+        d.avgPrice
+      );
+    }
+    this.lastUpdated = Date.now();
+    this.setSource('fugle_ws');
+  },
+
+  disconnectFuguoWs() {
+    if (this._ws) { try { this._ws.close(); } catch {} }
+    if (this._wsPingTimer) clearInterval(this._wsPingTimer);
+    this._ws = null;
+    this._wsAuthenticated = false;
+    this._wsSubscribed = false;
+    this._wsState = 'idle';
+  },
+
+  // REST 降級模式：WS 斷線時每 10 秒拉一次 quote
+  _startRestFallback() {
+    if (this._restTimer) clearInterval(this._restTimer);
+    const f = apiCfg.fugle;
+    if (!f.enabled || !f.apiKey || !f.wsAutoFallback) return;
+    this._restTimer = setInterval(async () => {
+      const n = await this.fetchFuguoRest();
+      if (n === 0) {
+        // 富果 REST 也失敗 → 降到 Yahoo
+        await this.fetchYahoo();
+      }
+    }, 10000);
+    this.setSource('fugle_rest');
+  },
+
+  // ---------- Yahoo Finance 備用 ----------
+  async fetchYahoo() {
+    const f = apiCfg.fugle;
+    if (f.enabled && f.apiKey) return 0; // 富果啟用時，Yahoo 不主動搶
+    let ok = 0;
+    for (const q of quotes) {
+      const sym = q.yahooSymbol;
+      try {
+        const r = await fetch(
+          'https://query1.finance.yahoo.com/v8/finance/chart/' +
+          encodeURIComponent(sym) +
+          '?interval=1d&range=1d'
+        );
+        if (!r.ok) continue;
+        const data = await r.json();
+        const meta = data?.chart?.result?.[0]?.meta;
+        if (!meta) continue;
+        const price = meta.regularMarketPrice ?? meta.chartPreviousClose;
+        if (price == null) continue;
+        q.applyReal(
+          price,
+          meta.regularMarketOpen ?? meta.chartPreviousClose,
+          meta.regularMarketDayHigh,
+          meta.regularMarketDayLow,
+          meta.chartPreviousClose,
+          meta.regularMarketDayHigh ?? null
+        );
+        ok++;
+      } catch (e) {
+        console.warn('[SuperETF] Yahoo 拉取 ' + sym + ' 失敗：', e.message);
+      }
+    }
+    if (ok > 0) {
+      this.lastUpdated = Date.now();
+      this.setSource('yahoo');
+    }
+    return ok;
+  },
+
+  // ---------- 同步入口 ----------
   async sync() {
-    const fu = await this.fetchFuguo();
-    if (fu > 0) { this.setSource('fuguo'); this.lastUpdated = Date.now(); return 'fuguo'; }
-    const yh = await this.fetchYahoo();
-    if (yh > 0)  { this.setSource('yahoo'); this.lastUpdated = Date.now(); return 'yahoo'; }
-    this.setSource('mock');
+    const f = apiCfg.fugle;
+    if (f.enabled && f.apiKey) {
+      // 嘗試 WebSocket 即時
+      this.connectFuguoWs();
+      // 同時先做一次 REST 補上初始開盤價
+      const n = await this.fetchFuguoRest();
+      if (n > 0) return 'fugle_rest';
+      return 'fugle_ws';
+    }
+    // 未啟用富果 → Yahoo 備用
+    const y = await this.fetchYahoo();
+    if (y > 0) return 'yahoo';
     return 'mock';
+  },
+
+  // 重新整理（設定变更后呼叫）
+  reset() {
+    this.disconnectFuguoWs();
+    if (this._restTimer) clearInterval(this._restTimer);
+    this._restTimer = null;
+    this._wsRetryUntil = 0;
   },
 };
 
-async function marketLoop() {
-  await MarketData.sync();
-  renderLive();
+// 離線兜底：模擬數據
+function mockTickAll() {
+  quotes.forEach(q => q.tick());
+  MarketData.setSource('mock');
 }
-marketLoop();
-setInterval(marketLoop, 30000);
 
-// ---------- Session badge ----------
-function isMarketOpen() {
-  const now = new Date();
-  const day = now.getDay();
-  if (day === 0 || day === 6) return false;
-  const t = now.getHours() * 60 + now.getMinutes();
-  return t >= 570 && t < 840; // 09:30–14:00 台北
-}
-function updateBadge() {
-  const el = document.getElementById('session-badge');
-  if (isMarketOpen()) { el.textContent = '開盤中'; el.className = 'session-badge open'; }
-  else { el.textContent = '盤前 / 盤後'; el.className = 'session-badge closed'; }
-}
-setInterval(updateBadge, 30000); updateBadge();
-
-// ---------- Tabs ----------
-document.querySelectorAll('.tab').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'analysis') drawAnalysis();
-    if (btn.dataset.tab === 'settings') loadSettingsForm();
-  });
-});
-
-// ---------- Live grid ----------
-let liveFilter = 'all';
-document.querySelectorAll('.chip').forEach(c => {
-  c.addEventListener('click', () => {
-    document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
-    c.classList.add('active');
-    liveFilter = c.dataset.type;
-    renderLive();
-  });
-});
-
+// ============================================================
+// Live tab render
+// ============================================================
 function renderLive() {
   const grid = document.getElementById('live-grid');
   if (!grid) return;
-  const list = quotes.filter(q => liveFilter === 'all' || q.type === liveFilter);
-  grid.innerHTML = list.map(q => {
-    const p = q.pctChg;
-    const typeLabel = q.type === 'index' ? '指數' : q.type === 'etf' ? 'ETF' : '個股';
-    return `<div class="live-card">
-      <div class="code"><span>${q.code.replace('^','')}</span><span>${typeLabel}</span></div>
-      <div class="name">${q.name}</div>
-      <div class="price ${cls(p)}">${fmt(q.price)}</div>
-      <div class="chg ${cls(p)}">${pctFmt(p)} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)}</span></div>
-    </div>`;
-  }).join('');
+  const activeType = document.querySelector('.chip.active')?.dataset.type || 'all';
+  grid.innerHTML = quotes
+    .filter(q => activeType === 'all' || q.type === activeType)
+    .map(q => {
+      const p = q.pctChg;
+      return `
+        <div class="live-card">
+          <div class="code"><span>${q.code}</span><span class="type-tag">${q.type}</span></div>
+          <div class="name">${q.name}</div>
+          <div class="price ${cls(p)}">${fmt(q.price)}</div>
+          <div class="chg ${cls(p)}">${pctFmt(p)}</div>
+          ${q.avgPrice != null ? `<div class="vwap-tag">均價 ${fmt(q.avgPrice)}</div>` : ''}
+        </div>`;
+    }).join('');
 }
 
-// ---------- PnL wall ----------
+// ============================================================
+// PnL tab
+// ============================================================
 function renderPnl() {
   const summary = document.getElementById('pnl-summary');
-  const wall    = document.getElementById('pnl-wall');
-  let totalCost = 0, totalValue = 0;
+  const wall = document.getElementById('pnl-wall');
+  if (!summary || !wall) return;
+
+  let totalCost = 0, totalMkt = 0;
   const tiles = holdings.map(h => {
-    const q      = quoteMap[h.code];
-    const price  = q ? q.price : h.cost;
-    const pnl    = (price - h.cost) * h.qty;
-    const pnlPct = h.cost ? (price - h.cost) / h.cost : 0;
-    const cost   = h.cost * h.qty;
-    const value  = price * h.qty;
-    totalCost  += cost;
-    totalValue += value;
-    return { h, price, pnl, pnlPct, cost, value };
-  });
-  const totalPnl = totalValue - totalCost;
-  const totalPct = totalCost ? totalPnl / totalCost : 0;
-
-  summary.innerHTML = `
-    <div class="pnl-box"><div class="label">總市值</div><div class="value">NT$ ${fmt(totalValue)}</div></div>
-    <div class="pnl-box"><div class="label">總成本</div><div class="value">NT$ ${fmt(totalCost)}</div></div>
-    <div class="pnl-box"><div class="label">總損益</div><div class="value ${cls(totalPct)}">${totalPnl >= 0 ? '+' : ''}${fmt(totalPnl)}</div></div>
-    <div class="pnl-box"><div class="label">總報酬率</div><div class="value ${cls(totalPct)}">${pctFmt(totalPct)}</div></div>`;
-
-  wall.innerHTML = tiles.map(({ h, price, pnl, pnlPct }) => {
     const q = quoteMap[h.code];
-    const sparkCanvas = `<canvas class="spark" data-code="${h.code}" width="200" height="34"></canvas>`;
-    return `<div class="pnl-tile">
-      <div class="head"><span>${h.code} ${h.name}</span><span>${h.qty} 股</span></div>
-      <div class="pnl ${cls(pnlPct)}">${pnl >= 0 ? '+' : ''}${fmt(pnl)}（${pctFmt(pnlPct)}）</div>
-      ${sparkCanvas}
-      <div style="font-size:11px;color:var(--muted)">現價 ${fmt(price)} · 成本 ${fmt(h.cost)}</div>
-    </div>`;
-  }).join('');
-
-  wall.querySelectorAll('.spark').forEach(cv => {
-    const q = quoteMap[cv.dataset.code];
-    if (!q) return;
-    const ctx = cv.getContext('2d');
-    const data = q._hist.slice(-30);
-    if (!data.length) return;
-    const w = cv.width, h2 = cv.height;
-    ctx.clearRect(0, 0, w, h2);
-    const min = Math.min(...data), max = Math.max(...data);
-    const range = max - min || 1;
-    ctx.strokeStyle = q.pctChg >= 0 ? '#22c55e' : '#ef4444';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    data.forEach((v, i) => {
-      const x = (i / (data.length - 1)) * w;
-      const y = h2 - 2 - ((v - min) / range) * (h2 - 4);
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  });
-}
-
-// ---------- Portfolio ----------
-document.getElementById('btn-add-holding').addEventListener('click', () => {
-  document.getElementById('add-holding-form').classList.toggle('hidden');
-});
-document.getElementById('fh-cancel').addEventListener('click', () => {
-  document.getElementById('add-holding-form').classList.add('hidden');
-});
-document.getElementById('fh-save').addEventListener('click', () => {
-  const code = document.getElementById('fh-code').value.trim();
-  const name = document.getElementById('fh-name').value.trim();
-  const qty  = parseInt(document.getElementById('fh-qty').value)   || 0;
-  const cost = parseFloat(document.getElementById('fh-cost').value) || 0;
-  if (!code || !qty) return alert('請填入代號與股數');
-  holdings.push({ code, name: name || code, qty, cost });
-  save(LS.holdings, holdings);
-  document.getElementById('add-holding-form').classList.add('hidden');
-  ['fh-code','fh-name','fh-qty','fh-cost'].forEach(id => document.getElementById(id).value = '');
-  renderPortfolio(); renderPnl();
-});
-
-function renderPortfolio() {
-  const body = document.getElementById('portfolio-body');
-  const totalValue = holdings.reduce((s, h) => s + (quoteMap[h.code] ? quoteMap[h.code].price : h.cost) * h.qty, 0);
-  body.innerHTML = holdings.map((h, i) => {
-    const q     = quoteMap[h.code];
     const price = q ? q.price : h.cost;
-    const value = price * h.qty;
-    const cost  = h.cost * h.qty;
-    const pnl   = value - cost;
-    const pct   = totalValue ? value / totalValue : 0;
-    return `<tr>
-      <td><strong>${h.code}</strong></td>
-      <td>${h.name}</td>
-      <td>${h.qty.toLocaleString()}</td>
-      <td>${fmt(h.cost)}</td>
-      <td class="${cls(q ? q.pctChg : 0)}">${fmt(price)}</td>
-      <td class="${cls(pnl)}">${pnl >= 0 ? '+' : ''}${fmt(pnl)}</td>
-      <td>${(pct * 100).toFixed(1)}%</td>
-      <td><button class="del-btn" data-i="${i}" title="移除">×</button></td>
-    </tr>`;
-  }).join('');
-  body.querySelectorAll('.del-btn').forEach(b => {
-    b.addEventListener('click', () => {
-      const i = parseInt(b.dataset.i);
-      holdings.splice(i, 1);
-      save(LS.holdings, holdings);
-      renderPortfolio(); renderPnl();
-    });
+    const cost  = h.qty * h.cost;
+    const mkt   = h.qty * price;
+    const pnl   = mkt - cost;
+    totalCost += cost; totalMkt += mkt;
+    const spark = q ? q._hist.slice(-20) : [];
+    const sparkCanvas = q ? `<canvas class="spark" width="120" height="34" data-symbol="${h.code}"></canvas>` : '';
+    return { h, price, pnl, spark, cost, mkt };
   });
-  renderTransactions();
+
+  const totalPnl = totalMkt - totalCost;
+  summary.innerHTML = `
+    <div class="pnl-box"><div class="label">總成本</div><div class="value">${fmt(totalCost, 0)}</div></div>
+    <div class="pnl-box"><div class="label">總市價</div><div class="value">${fmt(totalMkt, 0)}</div></div>
+    <div class="pnl-box"><div class="label">總損益</div><div class="value ${cls(totalPnl / totalCost)}">${totalPnl >= 0 ? '+' : ''}${fmt(totalPnl, 0)}</div></div>
+    <div class="pnl-box"><div class="label">報酬率</div><div class="value ${cls(totalPnl / totalCost)}">${pctFmt(totalPnl / totalCost)}</div></div>`;
+
+  wall.innerHTML = tiles.map(({ h, price, pnl, spark }) => `
+    <div class="pnl-tile">
+      <div class="head"><span>${h.code} ${h.name}</span><span class="${cls(pnl)}">${pnl >= 0 ? '+' : ''}${fmt(pnl, 0)}</span></div>
+      <div class="pnl ${cls(pnl)}">${fmt(price)} · ${fmt(h.qty)}股</div>
+      ${spark.length > 2 ? `<canvas class="spark" width="120" height="34" data-symbol="${h.code}"></canvas>` : ''}
+    </div>`).join('');
+
+  // 畫 sparklines
+  document.querySelectorAll('canvas.spark[data-symbol]').forEach(cv => {
+    const q = quoteMap[cv.dataset.symbol];
+    if (!q) return;
+    drawSpark(cv, q._hist.slice(-20), q.pctChg);
+  });
 }
 
-function renderTransactions() {
-  const txnEl = document.getElementById('transactions');
-  if (!txnEl) return;
-  txnEl.innerHTML = `<h3>交易紀錄（最新在前）</h3><div class="txn-list">` +
-    [...txns].reverse().slice(0, 10).map(t => `
-      <div class="txn-item">
-        <span class="${t.side === 'buy' ? 'up' : 'down'}">${t.side === 'buy' ? '買入' : '賣出'} ${t.code} ${Math.abs(t.qty)} 股 @ ${fmt(t.price)}</span>
-        <span class="date">${t.date}</span>
-      </div>`).join('') + '</div>';
-}
-
-// ---------- Dividends ----------
-document.getElementById('btn-add-dividend').addEventListener('click', () => {
-  document.getElementById('add-dividend-form').classList.toggle('hidden');
-});
-document.getElementById('fd-cancel').addEventListener('click', () => {
-  document.getElementById('add-dividend-form').classList.add('hidden');
-});
-document.getElementById('fd-save').addEventListener('click', () => {
-  const code   = document.getElementById('fd-code').value.trim();
-  const name   = document.getElementById('fd-name').value.trim();
-  const qty    = parseInt(document.getElementById('fd-qty').value)    || 0;
-  const amount = parseFloat(document.getElementById('fd-amount').value) || 0;
-  const date   = document.getElementById('fd-date').value || new Date().toISOString().slice(0, 10);
-  if (!code || !qty) return alert('請填入代號與股數');
-  dividends.push({ code, name: name || code, qty, amount, date });
-  save(LS.dividends, dividends);
-  document.getElementById('add-dividend-form').classList.add('hidden');
-  ['fd-code','fd-name','fd-qty','fd-amount','fd-date'].forEach(id => document.getElementById(id).value = '');
-  renderDividends(); renderPnl();
-});
-
-function renderDividends() {
-  const year = new Date().getFullYear().toString();
-  const list = dividends.filter(d => d.date.startsWith(year));
-  const total = list.reduce((s, d) => s + d.qty * d.amount, 0);
-  const yieldPct = holdings.length ? total / (holdings.reduce((s, h) => s + h.cost * h.qty, 0)) : 0;
-  document.getElementById('dividend-summary').innerHTML = `
-    <div class="pnl-box"><div class="label">本年度股息總額</div><div class="value up">NT$ ${fmt(total)}</div></div>
-    <div class="pnl-box"><div class="label">股息率（對成本）</div><div class="value">${(yieldPct * 100).toFixed(2)}%</div></div>`;
-  const el = document.getElementById('dividend-list');
-  el.innerHTML = dividends.length
-    ? dividends.slice().reverse().map(d => `
-      <div class="div-item">
-        <span><strong>${d.code}</strong> ${d.name} · ${d.qty} 股 × ${fmt(d.amount)} <span style="color:var(--muted);font-size:12px">${d.date}</span></span>
-        <span class="total">+${fmt(d.qty * d.amount)}</span>
-      </div>`).join('')
-    : '<div style="color:var(--muted);padding:20px;text-align:center">尚無股息紀錄</div>';
-}
-
-// ---------- Analysis ----------
-function drawAnalysis() {
-  const canvas = document.getElementById('analysis-canvas');
-  if (!canvas) return;
+function drawSpark(canvas, data, chg) {
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  const t    = quoteMap['^TWSE'];
-  if (!t) return;
-  const data = t._hist;
-  if (!data.length) return;
   const min = Math.min(...data), max = Math.max(...data);
   const range = max - min || 1;
-  const up = data[data.length - 1] >= data[0];
-
-  ctx.strokeStyle = '#2a3042'; ctx.lineWidth = 1;
-  for (let i = 0; i <= 4; i++) {
-    const y = (h - 40) * i / 4 + 20;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-  }
-  ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
-  ctx.lineWidth = 2;
   ctx.beginPath();
+  ctx.strokeStyle = chg >= 0 ? 'var(--green)' : 'var(--red)';
+  ctx.lineWidth = 1.5;
+  data.forEach((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - 2 - ((v - min) / range) * (h - 4);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+// ============================================================
+// Portfolio tab
+// ============================================================
+function renderPortfolio() {
+  const body = document.getElementById('portfolio-body');
+  const txnsEl = document.getElementById('transactions');
+  if (!body) return;
+  const totalMkt = holdings.reduce((s, h) => s + h.qty * (quoteMap[h.code]?.price ?? h.cost), 0);
+  body.innerHTML = holdings.map(h => {
+    const q = quoteMap[h.code];
+    const price = q ? q.price : h.cost;
+    const mkt = h.qty * price;
+    const cost = h.qty * h.cost;
+    const pnl = mkt - cost;
+    const ratio = totalMkt > 0 ? (mkt / totalMkt) * 100 : 0;
+    const idx = holdings.indexOf(h);
+    return `<tr>
+      <td>${h.code}</td><td>${h.name}</td>
+      <td>${h.qty.toLocaleString()}</td>
+      <td>${fmt(h.cost)}</td>
+      <td class="${cls((price - h.cost) / h.cost)}">${fmt(price)}</td>
+      <td class="${cls(pnl / cost)}">${pnl >= 0 ? '+' : ''}${fmt(pnl, 0)}（${pctFmt(pnl / cost)}）</td>
+      <td>${ratio.toFixed(1)}%</td>
+      <td><button class="del-btn" data-idx="${idx}" title="移除持倉">×</button></td>
+    </tr>`;
+  }).join('');
+  body.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.dataset.idx);
+      holdings.splice(idx, 1);
+      save(LS.holdings, holdings);
+      renderPortfolio();
+    });
+  });
+
+  if (txnsEl) {
+    txnsEl.innerHTML = txns.length
+      ? `<h3>交易記錄</h3><div class="txn-list">${txns.map((t, i) => `
+        <div class="txn-item">
+          <span>${t.side === 'buy' ? '🟢 買' : '🔴 賣'} ${t.code} ${t.name} × ${Math.abs(t.qty).toLocaleString()} @ ${fmt(t.price)}</span>
+          <span class="date">${t.date}</span>
+        </div>`).join('')}</div>`
+      : '';
+  }
+}
+
+// ============================================================
+// Dividends tab
+// ============================================================
+function renderDividends() {
+  const list = document.getElementById('dividend-list');
+  const sumEl = document.getElementById('dividend-summary');
+  if (!list) return;
+  const total = dividends.reduce((s, d) => s + d.qty * d.amount, 0);
+  if (sumEl) {
+    sumEl.innerHTML = `
+      <div class="pnl-box"><div class="label">本年度預估總股息</div><div class="value">${fmt(total, 0)}</div></div>
+      <div class="pnl-box"><div class="label">筆數</div><div class="value">${dividends.length}</div></div>`;
+  }
+  list.innerHTML = dividends.map((d, i) => `
+    <div class="div-item">
+      <span>${d.code} ${d.name} · ${d.qty.toLocaleString()}股 × ${fmt(d.amount)} = <b>${fmt(d.qty * d.amount, 0)}</b></span>
+      <span style="color:var(--muted);font-size:12px">${d.date}</span>
+      <button class="del-btn" data-idx="${i}" title="移除">×</button>
+    </div>`).join('');
+  list.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      dividends.splice(Number(btn.dataset.idx), 1);
+      save(LS.dividends, dividends);
+      renderDividends();
+    });
+  });
+}
+
+// ============================================================
+// Analysis tab
+// ============================================================
+function drawAnalysis() {
+  const canvas = document.getElementById('analysis-canvas');
+  const t = quoteMap['^TSE'];
+  if (!canvas || !t) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const data = t._hist.slice(-40);
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+
+  ctx.beginPath();
+  ctx.strokeStyle = t.pctChg >= 0 ? 'var(--green)' : 'var(--red)';
+  ctx.lineWidth = 2;
   data.forEach((v, i) => {
     const x = (i / (data.length - 1)) * w;
     const y = h - 20 - ((v - min) / range) * (h - 40);
@@ -448,7 +593,7 @@ function drawAnalysis() {
   ctx.stroke();
 
   const vwap   = data.reduce((s, v) => s + v, 0) / data.length;
-  const dayRng = (t.high - t.low) / t.open;
+  const dayRng = t.open > 0 ? (t.high - t.low) / t.open : 0;
   document.getElementById('analysis-metrics').innerHTML = `
     <div class="metric"><div class="label">加權開盤</div><div class="value">${fmt(t.open)}</div></div>
     <div class="metric"><div class="label">現價</div><div class="value ${cls(t.pctChg)}">${fmt(t.price)}</div></div>
@@ -466,24 +611,27 @@ function drawAnalysis() {
 }
 
 // ============================================================
-// Settings tab — API 設定存取
+// Settings tab — 富果 API 設定存取（v2 架構）
 // ============================================================
 function loadSettingsForm() {
-  const f = apiCfg.fuguo;
+  const f = apiCfg.fugle;
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
-  setVal('cfg-fuguo-baseurl',    f.baseUrl);
-  setVal('cfg-fuguo-key',        f.apiKey);
-  setVal('cfg-fuguo-symbols',    Object.keys(f.symbols).length ? JSON.stringify(f.symbols, null, 2) : '');
-  const chk = document.getElementById('cfg-fuguo-enabled');
-  if (chk) chk.checked = f.enabled;
+  setVal('cfg-fugle-enabled',        null); // 依 checkbox
+  const enabledEl = document.getElementById('cfg-fugle-enabled');
+  if (enabledEl) enabledEl.checked = f.enabled;
+  setVal('cfg-fugle-resturl', f.restUrl || FUGLE_REST_DEFAULT);
+  setVal('cfg-fugle-wsurl',   f.wsUrl   || FUGLE_WS_DEFAULT);
+  setVal('cfg-fugle-key',     f.apiKey);
+  const autoEl = document.getElementById('cfg-fugle-ws-autofallback');
+  if (autoEl) autoEl.checked = f.wsAutoFallback;
   updateSourcePriorityBadges();
 }
 
 function updateSourcePriorityBadges() {
   const fuBadge = document.getElementById('src-prio-fuguo');
   if (fuBadge) {
-    if (apiCfg.fuguo.enabled && apiCfg.fuguo.baseUrl) {
-      fuBadge.textContent = '已設定';
+    if (apiCfg.fugle.enabled && apiCfg.fugle.apiKey) {
+      fuBadge.textContent = apiCfg.fugle.wsAutoFallback ? '已設定（WS + REST）' : '已設定（REST）';
       fuBadge.className   = 'source-badge fuguo';
     } else {
       fuBadge.textContent = '未設定';
@@ -492,86 +640,142 @@ function updateSourcePriorityBadges() {
   }
 }
 
-function parseSymbolsJson(raw) {
-  if (!raw || !raw.trim()) return {};
-  try {
-    const obj = JSON.parse(raw);
-    if (typeof obj !== 'object' || Array.isArray(obj)) throw new Error();
-    return obj;
-  } catch {
-    throw new Error('代號對應格式錯誤，請使用 JSON 物件，例如 {"0050":"TWSE:0050"}');
-  }
-}
-
 function setFeedback(msg, ok) {
   const el = document.getElementById('cfg-feedback');
+  if (!el) return;
   el.textContent = msg;
   el.className = 'settings-feedback ' + (ok ? 'ok' : 'err');
 }
 
 document.getElementById('cfg-save').addEventListener('click', () => {
-  const f = apiCfg.fuguo;
-  const enabled = document.getElementById('cfg-fuguo-enabled').checked;
-  const baseUrl = document.getElementById('cfg-fuguo-baseurl').value.trim();
-  const apiKey  = document.getElementById('cfg-fuguo-key').value.trim();
-  let symbols = {};
-  try {
-    symbols = parseSymbolsJson(document.getElementById('cfg-fuguo-symbols').value);
-  } catch (e) {
-    setFeedback(e.message, false);
-    return;
-  }
+  const enabled   = document.getElementById('cfg-fugle-enabled').checked;
+  const restUrl   = document.getElementById('cfg-fugle-resturl').value.trim() || FUGLE_REST_DEFAULT;
+  const wsUrl     = document.getElementById('cfg-fugle-wsurl').value.trim()   || FUGLE_WS_DEFAULT;
+  const apiKey    = document.getElementById('cfg-fugle-key').value.trim();
+  const wsAutoFallback = document.getElementById('cfg-fugle-ws-autofallback')?.checked ?? true;
 
-  apiCfg = { fuguo: { enabled, baseUrl, apiKey, symbols } };
+  apiCfg = { fugle: { enabled, restUrl, wsUrl, apiKey, wsAutoFallback } };
   saveApiConfig(apiCfg);
 
-  const summary = enabled && baseUrl
-    ? '已保存：富果API 已啟用，即時行情將優先使用富果來源'
-    : '已保存：富果API 未啟用，即時行情將使用 Yahoo Finance';
+  MarketData.reset();
+  const summary = enabled && apiKey
+    ? '已保存：富果 API 已啟用' + (wsAutoFallback ? '（WebSocket 即時 + REST 降級）' : '（REST 模式）')
+    : '已保存：富果 API 未啟用，將使用 Yahoo Finance 備用';
   setFeedback(summary, true);
   updateSourcePriorityBadges();
-  // 立即重新同步一次
   MarketData.sync().then(src => {
     setFeedback(summary + '（目前來源：' + (SOURCE_LABELS[src] || src) + '）', true);
   });
 });
 
 document.getElementById('cfg-test').addEventListener('click', async () => {
-  const f = apiCfg.fuguo;
-  if (!f.baseUrl) { setFeedback('請先填入 API Endpoint', false); return; }
+  const f = apiCfg.fugle;
+  const restUrl = document.getElementById('cfg-fugle-resturl').value.trim() || FUGLE_REST_DEFAULT;
+  const apiKey  = document.getElementById('cfg-fugle-key').value.trim();
+  if (!apiKey) { setFeedback('請先填入 API Key', false); return; }
   setFeedback('測試中…', true);
   try {
-    const testCode = Object.keys(f.symbols)[0] || '0050';
-    const sym = f.symbols[testCode] || testCode;
-    const sep = f.baseUrl.includes('?') ? '&' : '?';
-    const url = f.baseUrl + encodeURIComponent(sym)
-      + (f.apiKey ? (sep + 'key=' + encodeURIComponent(f.apiKey)) : '');
-    const r = await fetch(url, { headers: f.apiKey ? { 'X-Api-Key': f.apiKey } : {} });
+    const testSymbol = '0050';
+    const url = restUrl.replace(/\/$/, '') + '/stock/intraday/quote/' + testSymbol;
+    const r = await fetch(url, { headers: { 'X-API-KEY': apiKey } });
     if (r.ok) {
       const data = await r.json();
-      const p = data.price ?? data.quote?.price ?? data.last ?? '（200 OK）';
-      setFeedback('✅ 連線成功：' + testCode + ' 回應 ' + JSON.stringify(p), true);
+      const p = data.lastPrice ?? data.closePrice ?? data.price ?? '（200 OK）';
+      setFeedback('✅ 富果 API 連線成功：0050 最新價 ' + p, true);
     } else {
-      setFeedback('❌ 連線失敗：HTTP ' + r.status, false);
+      setFeedback('❌ 連線失敗：HTTP ' + r.status + '（請檢查 API Key 是否有效）', false);
     }
   } catch (e) {
-    setFeedback('❌ 連線失敗：' + e.message, false);
+    setFeedback('❌ 連線失敗：' + e.message + '（可能是 CORS 或網路問題）', false);
   }
 });
 
-// ---------- Tick loop（離線模擬時啟用；有真實資料時跳過 random-walk） ----------
+// ---------- Tabs ----------
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    const panel = document.getElementById('tab-' + tab.dataset.tab);
+    if (panel) panel.classList.add('active');
+    if (tab.dataset.tab === 'settings') loadSettingsForm();
+  });
+});
+
+// filter chips
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    chip.classList.add('active');
+    renderLive();
+  });
+});
+
+// 新增持倉
+document.getElementById('btn-add-holding').addEventListener('click', () => {
+  document.getElementById('add-holding-form').classList.toggle('hidden');
+});
+document.getElementById('fh-cancel').addEventListener('click', () => {
+  document.getElementById('add-holding-form').classList.add('hidden');
+});
+document.getElementById('fh-save').addEventListener('click', () => {
+  const code = document.getElementById('fh-code').value.trim();
+  const name = document.getElementById('fh-name').value.trim();
+  const qty  = Number(document.getElementById('fh-qty').value) || 0;
+  const cost = Number(document.getElementById('fh-cost').value) || 0;
+  if (!code || qty <= 0) return;
+  const existing = holdings.find(h => h.code === code);
+  if (existing) {
+    existing.qty += qty;
+    existing.cost = (existing.cost * existing.qty + cost * qty) / existing.qty;
+  } else {
+    holdings.push({ code, name: name || code, qty, cost });
+  }
+  save(LS.holdings, holdings);
+  document.getElementById('add-holding-form').classList.add('hidden');
+  document.getElementById('fh-code').value = '';
+  document.getElementById('fh-name').value = '';
+  document.getElementById('fh-qty').value  = '';
+  document.getElementById('fh-cost').value  = '';
+  renderPortfolio();
+});
+
+// 新增股息
+document.getElementById('btn-add-dividend').addEventListener('click', () => {
+  document.getElementById('add-dividend-form').classList.toggle('hidden');
+});
+document.getElementById('fd-cancel').addEventListener('click', () => {
+  document.getElementById('add-dividend-form').classList.add('hidden');
+});
+document.getElementById('fd-save').addEventListener('click', () => {
+  const code   = document.getElementById('fd-code').value.trim();
+  const name   = document.getElementById('fd-name').value.trim();
+  const qty    = Number(document.getElementById('fd-qty').value) || 0;
+  const amount = Number(document.getElementById('fd-amount').value) || 0;
+  const date   = document.getElementById('fd-date').value || new Date().toISOString().slice(0, 10);
+  if (!code || qty <= 0) return;
+  dividends.push({ code, name: name || code, qty, amount, date });
+  save(LS.dividends, dividends);
+  document.getElementById('add-dividend-form').classList.add('hidden');
+  ['fd-code','fd-name','fd-qty','fd-amount','fd-date'].forEach(id => document.getElementById(id).value = '');
+  renderDividends();
+});
+
+// ---------- Tick loop（離線模擬時啟用；有真實資料時跳過 random-walk）----------
 setInterval(() => {
   if (MarketData.source === 'mock') {
-    quotes.forEach(q => q.tick());
+    mockTickAll();
   }
-  if (document.getElementById('tab-live').classList.contains('active')) renderLive();
-  if (document.getElementById('tab-pnl').classList.contains('active')) renderPnl();
-  if (document.getElementById('tab-portfolio').classList.contains('active')) renderPortfolio();
-  if (document.getElementById('tab-analysis').classList.contains('active')) drawAnalysis();
+  if (document.getElementById('tab-live')?.classList.contains('active'))     renderLive();
+  if (document.getElementById('tab-pnl')?.classList.contains('active'))    renderPnl();
+  if (document.getElementById('tab-portfolio')?.classList.contains('active')) renderPortfolio();
+  if (document.getElementById('tab-analysis')?.classList.contains('active'))  drawAnalysis();
 }, 2000);
 
 // ---------- Init ----------
-renderLive(); renderPnl(); renderPortfolio(); renderDividends();
+renderLive(); renderPnl(); renderPortfolio(); renderDividends(); drawAnalysis();
+loadSettingsForm();
+MarketData.sync();
 console.log('SuperETF v' + VERSION);
 
 })();
