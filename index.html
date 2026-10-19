@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub">台股資產管理</span>
+        <span class="sub">台股資產管理 v1.1.0</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -31,6 +31,10 @@
     <section id="tab-live" class="tab-panel active">
       <div class="section-head">
         <h2>即時行情</h2>
+        <div class="live-source-bar">
+          <span class="source-badge" id="data-source-badge">模擬數據</span>
+          <span class="last-updated" id="last-updated">尚未更新</span>
+        </div>
         <div class="filter-chips">
           <button class="chip active" data-type="all">全部</button>
           <button class="chip" data-type="index">指數</button>
@@ -103,7 +107,7 @@
       <div class="analysis-chart-wrap">
         <canvas id="analysis-canvas" width="800" height="300"></canvas>
         <div class="chart-legend">
-          <span class="dot dot-up"></span> 0050 趨勢（近30日模擬）
+          <span class="dot dot-up"></span> 0050 趨勢
         </div>
       </div>
       <div class="analysis-notes" id="analysis-notes"></div>
@@ -111,7 +115,7 @@
   </main>
 
   <footer class="footer">
-    <span>SuperETF · 個人開發版本 · 行情為模擬數據（每 2 秒更新）</span>
+    <span>SuperETF v1.1.0 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
 <script src="app.js"></script>
