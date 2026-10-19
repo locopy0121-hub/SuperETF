@@ -9,9 +9,6 @@ jobs:
   apk:
     name: Build debug APK
     runs-on: ubuntu-latest
-    env:
-      ANDROID_HOME: /usr/local/lib/android/sdk
-      GRADLE_OPTS: -Dorg.gradle.daemon=false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,29 +18,26 @@ jobs:
         with:
           node-version: 20
 
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Download Android cmdline-tools
-        run: |
-          curl -sSLo cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          mkdir -p "$ANDROID_HOME/cmdline-tools"
-          unzip -q cmdline-tools.zip -d "$ANDROID_HOME/cmdline-tools"
-          mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" 2>/dev/null || true
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-
-      - name: Install Android build targets
-        run: |
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
-
       - name: Stage web assets into www/
         run: |
-          mkdir -p www
-          cp -r $(ls -d * | grep -v -e '^www$' -e '^android$' -e '^.git$' -e '^node_modules$') www/
-          cp -r index.html www/ 2>/dev/null || true
+          rm -rf www && mkdir -p www
+          cp index.html app.js styles.css www/ 2>/dev/null || true
+          [ -d "assets" ] && cp -r assets www/ || true
 
-      - name: Generate Capacitor android platform
-        run: npx cap add android
+      - name: Generate Capacitor android platform if missing
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
 
       - name: Sync web assets into android
         run: npx cap sync android
@@ -59,3 +53,4 @@ jobs:
         with:
           name: superetf-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
