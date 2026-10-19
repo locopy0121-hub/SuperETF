@@ -36,6 +36,12 @@ jobs:
         run: |
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
+      - name: Stage web assets into www/
+        run: |
+          mkdir -p www
+          cp -r $(ls -d * | grep -v -e '^www$' -e '^android$' -e '^.git$' -e '^node_modules$') www/
+          cp -r index.html www/ 2>/dev/null || true
+
       - name: Generate Capacitor android platform
         run: npx cap add android
 
