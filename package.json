@@ -1,0 +1,15 @@
+{
+  "name": "superetf",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SuperETF - 台股 ETF 資產管理 App (PWA + Capacitor)",
+  "scripts": {
+    "cap:add": "capacitor add android",
+    "cap:sync": "capacitor sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/cli": "^6.0.0"
+  }
+}
