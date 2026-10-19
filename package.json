@@ -1,11 +1,12 @@
 {
   "name": "superetf",
-  "version": "0.1.0",
+  "version": "1.1.1",
   "private": true,
   "description": "SuperETF - 台股 ETF 資產管理 App (PWA + Capacitor)",
   "scripts": {
     "cap:add": "capacitor add android",
-    "cap:sync": "capacitor sync android"
+    "cap:sync": "capacitor sync android",
+    "test": "node --test tests/*.test.cjs && node --check app.js && node --check fugle-api.js"
   },
   "dependencies": {
     "@capacitor/android": "^6.0.0",

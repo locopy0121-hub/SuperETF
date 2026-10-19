@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub">台股資產管理 v1.1.0</span>
+        <span class="sub">台股資產管理 v1.1.1</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -120,7 +120,7 @@
       <div class="settings-block">
         <div class="settings-block-head">
           <h3>富果 API 設定</h3>
-          <span class="settings-desc">填入後立即生效，主行情來源；未設定時自動使用 Yahoo Finance</span>
+          <span class="settings-desc">Market Data v1.0；使用 X-API-KEY Header；富果失敗時自動切換 Yahoo 備援</span>
         </div>
         <div class="settings-form">
           <label class="settings-row">
@@ -134,7 +134,7 @@
           <label class="settings-row">
             <span class="settings-label">API Endpoint（BaseUrl）</span>
             <input type="text" id="cfg-fuguo-baseurl"
-                   placeholder="https://api.fuguo.tw/v1/quote/">
+                   placeholder="https://api.fugle.tw/marketdata/v1.0">
           </label>
 
           <label class="settings-row">
@@ -147,7 +147,7 @@
           <label class="settings-row">
             <span class="settings-label">代號對應（JSON，選填）</span>
             <textarea id="cfg-fuguo-symbols" rows="3"
-                      placeholder='例：{"0050":"TWSE:0050","00859":"TWSE:00859","^TWSE":"TWSE"}'></textarea>
+                      placeholder='例：{"0050":"0050","00859":"00859","^TWSE":"IR0001"}'></textarea>
           </label>
 
           <div class="settings-actions">
@@ -182,7 +182,7 @@
       <div class="settings-block">
         <div class="settings-block-head"><h3>關於</h3></div>
         <div class="settings-about">
-          <div class="about-row"><span class="about-label">版本</span><span>v1.1.0</span></div>
+          <div class="about-row"><span class="about-label">版本</span><span>v1.1.1</span></div>
           <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
         </div>
       </div>
@@ -191,9 +191,10 @@
   </main>
 
   <footer class="footer">
-    <span>SuperETF v1.1.0 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
+    <span>SuperETF v1.1.1 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
+<script src="fugle-api.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

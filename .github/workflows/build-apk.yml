@@ -27,10 +27,13 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Verify Fugle route regressions
+        run: npm test
+
       - name: Stage web assets into www/
         run: |
           rm -rf www && mkdir -p www
-          cp index.html app.js styles.css www/ 2>/dev/null || true
+          cp index.html app.js fugle-api.js styles.css www/
           [ -d "assets" ] && cp -r assets www/ || true
 
       - name: Generate Capacitor android platform if missing

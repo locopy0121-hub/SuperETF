@@ -1,14 +1,16 @@
 (() => {
 'use strict';
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
+const FugleAPI = globalThis.SuperETFFugleAPI;
+if (!FugleAPI) throw new Error('富果 API 工具未載入');
 
 // ---------- API 設定（存於 localStorage，由「設置」tab 管理）----------
 const LS_API  = 'setf_api_config';
 const API_DEFAULTS = {
   fuguo: {
     enabled:  false,
-    baseUrl:  '',
+    baseUrl:  FugleAPI.REST_BASE,
     apiKey:   '',
     symbols:  {},   // 例：{ '0050': 'TWSE:0050', '^TWSE': 'TWSE' }
   },
@@ -21,7 +23,7 @@ function loadApiConfig() {
     return {
       fuguo: {
         enabled:  !!saved?.fuguo?.enabled,
-        baseUrl:  saved?.fuguo?.baseUrl  || '',
+        baseUrl:  saved?.fuguo?.baseUrl  || FugleAPI.REST_BASE,
         apiKey:   saved?.fuguo?.apiKey   || '',
         symbols:  saved?.fuguo?.symbols  || {},
       },
@@ -121,6 +123,7 @@ const SOURCE_LABELS = {
 const MarketData = {
   source: 'mock',
   lastUpdated: 0,
+  lastFugleError: '',
 
   setSource(name) {
     this.source = name;
@@ -136,69 +139,81 @@ const MarketData = {
     updateSourcePriorityBadges();
   },
 
-  // 主：富果API（依 apiCfg.fuguo 動態判斷）
+  // REST v1.0：合法路由與金鑰標頭，逐檔隔離 404。
   async fetchFuguo() {
     const f = apiCfg.fuguo;
-    if (!f.enabled || !f.baseUrl) return 0;
-    try {
-      const targets = quotes.filter(q => f.symbols[q.code]);
-      if (!targets.length) return 0;
-      const batch = await Promise.all(targets.map(async q => {
-        const sym = f.symbols[q.code];
-        const sep = f.baseUrl.includes('?') ? '&' : '?';
-        const url = f.baseUrl + encodeURIComponent(sym)
-          + (f.apiKey ? (sep + 'key=' + encodeURIComponent(f.apiKey)) : '');
-        const headers = f.apiKey ? { 'X-Api-Key': f.apiKey } : {};
-        const r = await fetch(url, { headers });
-        if (!r.ok) throw new Error('fuguo ' + r.status);
+    if (!f.enabled || !f.apiKey) return 0;
+    this.lastFugleError = '';
+    let base;
+    try { base = FugleAPI.normalizeRestBase(f.baseUrl); }
+    catch (e) { this.lastFugleError = e.message; return 0; }
+
+    const responses = await Promise.all(quotes.map(async q => {
+      const symbol = f.symbols?.[q.code] || q.code;
+      try {
+        const url = FugleAPI.buildQuoteUrl(base, symbol);
+        const r = await fetch(url, {
+          headers: { 'X-API-KEY': f.apiKey, Accept: 'application/json' },
+        });
+        if (!r.ok) throw new Error(FugleAPI.httpError(r.status, q.code));
         const data = await r.json();
-        const p = data.price ?? data.quote?.price ?? data.last ?? null;
-        const o = data.open  ?? data.quote?.open  ?? data.open ?? p;
-        return p ? { code: q.code, price: p, open: o } : null;
-      }));
-      const valid = batch.filter(Boolean);
-      valid.forEach(v => { const q = quoteMap[v.code]; if (q) q.applyReal(v.price, v.open); });
-      return valid.length;
-    } catch (e) { console.warn('[fuguo]', e); return 0; }
+        const value = FugleAPI.parseQuote(data);
+        if (!value) throw new Error(q.code + ' HTTP 200，但沒有有效成交價格');
+        return { q, data, value };
+      } catch (e) {
+        if (!this.lastFugleError) this.lastFugleError = e.message;
+        console.warn('[SuperETF] 富果報價失敗：' + q.code + '：' + e.message);
+        return null;
+      }
+    }));
+    const valid = responses.filter(Boolean);
+    for (const {q, data, value} of valid) {
+      q.applyReal(value.price, value.open);
+      if (value.high != null) q.high = value.high;
+      if (value.low != null) q.low = value.low;
+      if (typeof data.name === 'string' && data.name) q.name = data.name;
+    }
+    return valid.length;
   },
 
-  // 備：Yahoo Finance
+  // Yahoo 備援使用 chart v8 的正確回應格式（非 spark 的錯誤欄位）。
   async fetchYahoo() {
-    try {
-      const symbols = quotes.map(q => q.yahooSymbol);
-      const url = 'https://query1.finance.yahoo.com/v8/finance/spark?symbols=' + symbols.join(',')
-        + '&range=1d&interval=1m';
-      const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
-      if (!r.ok) throw new Error('yahoo ' + r.status);
-      const data = await r.json();
-      const result = data.result || [];
-      let count = 0;
-      for (const item of result) {
-        const q = quotes.find(x => x.yahooSymbol === item.symbol);
-        if (!q || !item.price || !Array.isArray(item.price.items)) continue;
-        const last = item.price.items[item.price.items.length - 1];
-        if (last == null) continue;
-        q.applyReal(last, item.open);
-        count++;
+    const responses = await Promise.all(quotes.map(async q => {
+      try {
+        const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' +
+          encodeURIComponent(q.yahooSymbol) + '?interval=1d&range=1d';
+        const r = await fetch(url, { headers: { Accept: 'application/json' } });
+        if (!r.ok) return null;
+        const meta = (await r.json())?.chart?.result?.[0]?.meta;
+        const price = Number(meta?.regularMarketPrice ?? meta?.chartPreviousClose);
+        if (!Number.isFinite(price) || price <= 0) return null;
+        return { q, price, open: Number(meta.regularMarketOpen ?? meta.chartPreviousClose) || price };
+      } catch (e) {
+        console.warn('[SuperETF] Yahoo 備援 ' + q.code + '：' + e.message);
+        return null;
       }
-      if (count) this.lastUpdated = Date.now();
-      return count;
-    } catch (e) { console.warn('[yahoo]', e); return 0; }
+    }));
+    const valid = responses.filter(Boolean);
+    valid.forEach(v => v.q.applyReal(v.price, v.open));
+    return valid.length;
   },
 
   async sync() {
     const fu = await this.fetchFuguo();
-    if (fu > 0) { this.setSource('fuguo'); this.lastUpdated = Date.now(); return 'fuguo'; }
+    if (fu > 0) { this.lastUpdated = Date.now(); this.setSource('fuguo'); return 'fuguo'; }
     const yh = await this.fetchYahoo();
-    if (yh > 0)  { this.setSource('yahoo'); this.lastUpdated = Date.now(); return 'yahoo'; }
+    if (yh > 0) { this.lastUpdated = Date.now(); this.setSource('yahoo'); return 'yahoo'; }
     this.setSource('mock');
     return 'mock';
   },
 };
 
+let marketSyncPending = false;
 async function marketLoop() {
-  await MarketData.sync();
-  renderLive();
+  if (marketSyncPending) return;
+  marketSyncPending = true;
+  try { await MarketData.sync(); renderLive(); }
+  finally { marketSyncPending = false; }
 }
 marketLoop();
 setInterval(marketLoop, 30000);
@@ -471,7 +486,7 @@ function drawAnalysis() {
 function loadSettingsForm() {
   const f = apiCfg.fuguo;
   const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
-  setVal('cfg-fuguo-baseurl',    f.baseUrl);
+  setVal('cfg-fuguo-baseurl',    (() => { try { return FugleAPI.normalizeRestBase(f.baseUrl); } catch { return f.baseUrl; } })());
   setVal('cfg-fuguo-key',        f.apiKey);
   setVal('cfg-fuguo-symbols',    Object.keys(f.symbols).length ? JSON.stringify(f.symbols, null, 2) : '');
   const chk = document.getElementById('cfg-fuguo-enabled');
@@ -482,7 +497,7 @@ function loadSettingsForm() {
 function updateSourcePriorityBadges() {
   const fuBadge = document.getElementById('src-prio-fuguo');
   if (fuBadge) {
-    if (apiCfg.fuguo.enabled && apiCfg.fuguo.baseUrl) {
+    if (apiCfg.fuguo.enabled && apiCfg.fuguo.apiKey) {
       fuBadge.textContent = '已設定';
       fuBadge.className   = 'source-badge fuguo';
     } else {
@@ -496,7 +511,11 @@ function parseSymbolsJson(raw) {
   if (!raw || !raw.trim()) return {};
   try {
     const obj = JSON.parse(raw);
-    if (typeof obj !== 'object' || Array.isArray(obj)) throw new Error();
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error();
+    for (const [code, symbol] of Object.entries(obj)) {
+      if (!quoteMap[code] || typeof symbol !== 'string') throw new Error();
+      FugleAPI.normalizeSymbol(symbol);
+    }
     return obj;
   } catch {
     throw new Error('代號對應格式錯誤，請使用 JSON 物件，例如 {"0050":"TWSE:0050"}');
@@ -512,8 +531,11 @@ function setFeedback(msg, ok) {
 document.getElementById('cfg-save').addEventListener('click', () => {
   const f = apiCfg.fuguo;
   const enabled = document.getElementById('cfg-fuguo-enabled').checked;
-  const baseUrl = document.getElementById('cfg-fuguo-baseurl').value.trim();
+  let baseUrl;
+  try { baseUrl = FugleAPI.normalizeRestBase(document.getElementById('cfg-fuguo-baseurl').value); }
+  catch (e) { setFeedback('Base URL 錯誤：' + e.message, false); return; }
   const apiKey  = document.getElementById('cfg-fuguo-key').value.trim();
+  if (enabled && !apiKey) { setFeedback('啟用富果 API 前請輸入 API Key', false); return; }
   let symbols = {};
   try {
     symbols = parseSymbolsJson(document.getElementById('cfg-fuguo-symbols').value);
@@ -532,30 +554,32 @@ document.getElementById('cfg-save').addEventListener('click', () => {
   updateSourcePriorityBadges();
   // 立即重新同步一次
   MarketData.sync().then(src => {
-    setFeedback(summary + '（目前來源：' + (SOURCE_LABELS[src] || src) + '）', true);
+    const error = enabled && src !== 'fuguo' ? MarketData.lastFugleError : '';
+    setFeedback(summary + '（目前來源：' + (SOURCE_LABELS[src] || src) + '）' +
+      (error ? '；富果診斷：' + error : ''), !error);
   });
 });
 
 document.getElementById('cfg-test').addEventListener('click', async () => {
-  const f = apiCfg.fuguo;
-  if (!f.baseUrl) { setFeedback('請先填入 API Endpoint', false); return; }
-  setFeedback('測試中…', true);
+  // 使用畫面上尚未保存的值，避免誤判測試的是舊設定。
+  const input = document.getElementById('cfg-fuguo-baseurl').value;
+  const key = document.getElementById('cfg-fuguo-key').value.trim();
+  if (!key) { setFeedback('請先填入 API Key', false); return; }
+  let url;
+  try { url = FugleAPI.buildQuoteUrl(input, '0050'); }
+  catch (e) { setFeedback('❌ ' + e.message, false); return; }
+  setFeedback('測試中：富果 0050 標準報價路由…', true);
   try {
-    const testCode = Object.keys(f.symbols)[0] || '0050';
-    const sym = f.symbols[testCode] || testCode;
-    const sep = f.baseUrl.includes('?') ? '&' : '?';
-    const url = f.baseUrl + encodeURIComponent(sym)
-      + (f.apiKey ? (sep + 'key=' + encodeURIComponent(f.apiKey)) : '');
-    const r = await fetch(url, { headers: f.apiKey ? { 'X-Api-Key': f.apiKey } : {} });
-    if (r.ok) {
-      const data = await r.json();
-      const p = data.price ?? data.quote?.price ?? data.last ?? '（200 OK）';
-      setFeedback('✅ 連線成功：' + testCode + ' 回應 ' + JSON.stringify(p), true);
-    } else {
-      setFeedback('❌ 連線失敗：HTTP ' + r.status, false);
+    const r = await fetch(url, { headers: { 'X-API-KEY': key, Accept: 'application/json' } });
+    if (!r.ok) {
+      setFeedback('❌ ' + FugleAPI.httpError(r.status, '0050') + '；URL：' + url, false);
+      return;
     }
+    const quote = FugleAPI.parseQuote(await r.json());
+    if (!quote) { setFeedback('❌ HTTP 200，但無有效成交價格', false); return; }
+    setFeedback('✅ 富果 API v1.0 HTTP 200：0050 價格 ' + quote.price, true);
   } catch (e) {
-    setFeedback('❌ 連線失敗：' + e.message, false);
+    setFeedback('❌ 網路或 CORS 問題：' + e.message, false);
   }
 });
 
