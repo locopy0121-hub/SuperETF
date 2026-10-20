@@ -46,16 +46,44 @@
     return null;
   }
 
+  // REST 200 only means request success; premarket may have referencePrice but no trade.
   function parseQuote(data) {
-    if (!data || typeof data !== 'object') return null;
-    const last = price(data.lastPrice, data.closePrice, data.lastTrade?.price, data.index);
-    if (last == null) return null;
+    const d = data?.data && typeof data.data === 'object' && !Array.isArray(data.data) ? data.data : data;
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+    const traded = price(d.lastPrice, d.lastTrade?.price, d.closePrice);
+    const trial = price(d.lastTrial?.price);
+    const reference = price(d.referencePrice);
+    const previousClose = price(d.previousClose);
+    let value, kind;
+    if (traded != null) {
+      value = traded;
+      kind = d.isTrial ? 'trial' : (d.isClose ? 'close' : 'trade');
+    } else if (d.isTrial && trial != null) {
+      value = trial; kind = 'trial';
+    } else if (reference != null) {
+      value = reference; kind = 'reference';
+    } else if (previousClose != null) {
+      value = previousClose; kind = 'previous';
+    } else {
+      return null;
+    }
     return {
-      price: last,
-      open: price(data.openPrice, data.previousClose) ?? last,
-      high: price(data.highPrice),
-      low: price(data.lowPrice),
+      price: value,
+      open: price(d.openPrice) ?? reference ?? previousClose ?? value,
+      high: price(d.highPrice),
+      low: price(d.lowPrice),
+      previousClose,
+      kind,
     };
+  }
+
+  function quoteStatus(quote) {
+    if (!quote) return 'HTTP 200 已連線，但尚無成交價／參考價／昨收價資料';
+    const labels = {
+      trade: '最新成交價', close: '收盤價', trial: '試撮價（非正式成交）',
+      reference: '盤前參考價（尚無成交）', previous: '昨收價（尚無成交）',
+    };
+    return (labels[quote.kind] || '行情價格') + ' ' + quote.price;
   }
 
   function httpError(status, code) {
@@ -67,7 +95,7 @@
     return 'HTTP ' + status + ' [' + code + ']：' + cause;
   }
 
-  const result = { REST_BASE, normalizeRestBase, normalizeSymbol, buildQuoteUrl, parseQuote, httpError };
+  const result = { REST_BASE, normalizeRestBase, normalizeSymbol, buildQuoteUrl, parseQuote, quoteStatus, httpError };
   if (typeof module === 'object' && module.exports) module.exports = result;
   root.SuperETFFugleAPI = result;
 })(globalThis);

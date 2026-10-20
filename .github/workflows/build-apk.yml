@@ -45,15 +45,34 @@ jobs:
       - name: Sync web assets into android
         run: npx cap sync android
 
+      - name: Set Android package version
+        id: version
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          CODE="$(node -p "const v=require('./package.json').version.split('.').map(Number); v[0]*10000+v[1]*100+v[2]")"
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          sed -i -E "s/versionCode [0-9]+/versionCode $CODE/; s/versionName \"[^\"]+\"/versionName \"$VERSION\"/" android/app/build.gradle
+          grep -Fq "versionCode $CODE" android/app/build.gradle
+          grep -Fq "versionName \"$VERSION\"" android/app/build.gradle
+
       - name: Build debug APK
         working-directory: android
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
 
+      - name: Rename APK using app version
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/SuperETF-v${VERSION}-debug.apk"
+          test -s "dist/SuperETF-v${VERSION}-debug.apk"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: superetf-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: SuperETF-v${{ steps.version.outputs.value }}-debug
+          path: dist/SuperETF-v${{ steps.version.outputs.value }}-debug.apk
           if-no-files-found: error

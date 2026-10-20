@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 
-const VERSION = '1.1.1';
+const VERSION = '1.1.2';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 
@@ -86,6 +86,9 @@ class Quote {
     this.base = base; this.drift = drift;
     this.high = this.open; this.low = this.open;
     this._hist = Array.from({ length: 30 }, (_, i) => base * (1 + Math.sin(i / 5) * 0.01 + (Math.random() - 0.5) * 0.005));
+    this.hasReal = false;
+    this.previousClose = null;
+    this.priceKind = 'mock';
   }
   tick() {
     const shock = (Math.random() - 0.5) * this.base * 0.002 + this.drift * this.base;
@@ -94,14 +97,27 @@ class Quote {
     this.low  = Math.min(this.low,  this.price);
     this._hist.push(this.price); if (this._hist.length > 60) this._hist.shift();
   }
-  applyReal(price, open) {
-    if (open) this.open = open;
+  applyReal(price, open, details = {}) {
+    if (!Number.isFinite(price) || price <= 0) return;
+    if (!this.hasReal) {
+      this._hist = [];
+      this.high = details.high ?? price;
+      this.low = details.low ?? price;
+    } else {
+      this.high = details.high ?? Math.max(this.high, price);
+      this.low = details.low ?? Math.min(this.low, price);
+    }
+    if (Number.isFinite(open) && open > 0) this.open = open;
     this.price = price;
-    this.high = Math.max(this.high, price);
-    this.low  = Math.min(this.low,  price);
+    this.previousClose = details.previousClose ?? this.previousClose;
+    this.priceKind = details.kind ?? 'trade';
+    this.hasReal = true;
     this._hist.push(price); if (this._hist.length > 60) this._hist.shift();
   }
-  get pctChg() { return (this.price - this.open) / this.open; }
+  get pctChg() {
+    const base = this.previousClose > 0 ? this.previousClose : this.open;
+    return base > 0 ? (this.price - base) / base : 0;
+  }
 }
 
 const quotes   = SEED_QUOTES.map(q => new Quote(q));
@@ -115,7 +131,8 @@ function cls(p) { return p > 0.0005 ? 'up' : p < -0.0005 ? 'down' : 'flat'; }
 // MarketData service — 富果API 主 / Yahoo 備 / 離線模擬兜底
 // ============================================================
 const SOURCE_LABELS = {
-  fuguo: '來源：富果API',
+  fuguo: '來源：富果 API',
+  fuguo_waiting: '富果 API 已連線（尚無行情）',
   yahoo: '來源：Yahoo Finance',
   mock:  '模擬數據（離線）',
 };
@@ -124,6 +141,8 @@ const MarketData = {
   source: 'mock',
   lastUpdated: 0,
   lastFugleError: '',
+  lastFugleHttp200: 0,
+  lastFugleNoPrice: 0,
 
   setSource(name) {
     this.source = name;
@@ -144,6 +163,8 @@ const MarketData = {
     const f = apiCfg.fuguo;
     if (!f.enabled || !f.apiKey) return 0;
     this.lastFugleError = '';
+    this.lastFugleHttp200 = 0;
+    this.lastFugleNoPrice = 0;
     let base;
     try { base = FugleAPI.normalizeRestBase(f.baseUrl); }
     catch (e) { this.lastFugleError = e.message; return 0; }
@@ -158,7 +179,6 @@ const MarketData = {
         if (!r.ok) throw new Error(FugleAPI.httpError(r.status, q.code));
         const data = await r.json();
         const value = FugleAPI.parseQuote(data);
-        if (!value) throw new Error(q.code + ' HTTP 200，但沒有有效成交價格');
         return { q, data, value };
       } catch (e) {
         if (!this.lastFugleError) this.lastFugleError = e.message;
@@ -166,12 +186,13 @@ const MarketData = {
         return null;
       }
     }));
-    const valid = responses.filter(Boolean);
+    this.lastFugleHttp200 = responses.filter(Boolean).length;
+    const valid = responses.filter(item => item && item.value);
+    this.lastFugleNoPrice = this.lastFugleHttp200 - valid.length;
     for (const {q, data, value} of valid) {
-      q.applyReal(value.price, value.open);
-      if (value.high != null) q.high = value.high;
-      if (value.low != null) q.low = value.low;
-      if (typeof data.name === 'string' && data.name) q.name = data.name;
+      q.applyReal(value.price, value.open, value);
+      const record = data?.data && typeof data.data === 'object' ? data.data : data;
+      if (typeof record.name === 'string' && record.name) q.name = record.name;
     }
     return valid.length;
   },
@@ -203,6 +224,9 @@ const MarketData = {
     if (fu > 0) { this.lastUpdated = Date.now(); this.setSource('fuguo'); return 'fuguo'; }
     const yh = await this.fetchYahoo();
     if (yh > 0) { this.lastUpdated = Date.now(); this.setSource('yahoo'); return 'yahoo'; }
+    if (this.lastFugleHttp200) {
+      this.lastUpdated = Date.now(); this.setSource('fuguo_waiting'); return 'fuguo_waiting';
+    }
     this.setSource('mock');
     return 'mock';
   },
@@ -263,10 +287,13 @@ function renderLive() {
   grid.innerHTML = list.map(q => {
     const p = q.pctChg;
     const typeLabel = q.type === 'index' ? '指數' : q.type === 'etf' ? 'ETF' : '個股';
+    const kindLabel = q.hasReal
+      ? ({reference: '參考', previous: '昨收', trial: '試撮'})[q.priceKind] || ''
+      : '';
     return `<div class="live-card">
       <div class="code"><span>${q.code.replace('^','')}</span><span>${typeLabel}</span></div>
       <div class="name">${q.name}</div>
-      <div class="price ${cls(p)}">${fmt(q.price)}</div>
+      <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
       <div class="chg ${cls(p)}">${pctFmt(p)} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)}</span></div>
     </div>`;
   }).join('');
@@ -501,8 +528,10 @@ function updateSourcePriorityBadges() {
       fuBadge.textContent = '已設定';
       fuBadge.className   = 'source-badge fuguo';
     } else {
-      fuBadge.textContent = '未設定';
-      fuBadge.className   = 'source-badge mock';
+      const draft = document.getElementById('cfg-fuguo-enabled')?.checked &&
+        document.getElementById('cfg-fuguo-key')?.value.trim();
+      fuBadge.textContent = draft ? '待儲存' : '未設定';
+      fuBadge.className = 'source-badge mock';
     }
   }
 }
@@ -554,9 +583,11 @@ document.getElementById('cfg-save').addEventListener('click', () => {
   updateSourcePriorityBadges();
   // 立即重新同步一次
   MarketData.sync().then(src => {
-    const error = enabled && src !== 'fuguo' ? MarketData.lastFugleError : '';
+    const error = enabled && src !== 'fuguo' && !MarketData.lastFugleHttp200
+      ? MarketData.lastFugleError : '';
+    const idle = enabled && MarketData.lastFugleNoPrice > 0 ? '；部分代號 HTTP 200 但盤前尚無價格' : '';
     setFeedback(summary + '（目前來源：' + (SOURCE_LABELS[src] || src) + '）' +
-      (error ? '；富果診斷：' + error : ''), !error);
+      idle + (error ? '；富果診斷：' + error : ''), !error);
   });
 });
 
@@ -576,8 +607,9 @@ document.getElementById('cfg-test').addEventListener('click', async () => {
       return;
     }
     const quote = FugleAPI.parseQuote(await r.json());
-    if (!quote) { setFeedback('❌ HTTP 200，但無有效成交價格', false); return; }
-    setFeedback('✅ 富果 API v1.0 HTTP 200：0050 價格 ' + quote.price, true);
+    const pending = apiCfg.fuguo.enabled ? '' : '；請按「保存設定」啟用自動更新';
+    setFeedback('✅ 富果 API v1.0 ' + FugleAPI.quoteStatus(quote) + pending, true);
+    updateSourcePriorityBadges();
   } catch (e) {
     setFeedback('❌ 網路或 CORS 問題：' + e.message, false);
   }
