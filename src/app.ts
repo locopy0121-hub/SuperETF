@@ -204,7 +204,6 @@ for (const s of SEED_QUOTES) quoteMap[s.code] = new Quote(s);
 const quotes = Object.values(quoteMap);
 
 // ---------- Yahoo Finance (备用来源) ----------
-let yahooCache: Record<string, Partial<ParsedQuote> & { kind: string }> = {};
 let yahooFetchTs = 0;
 const YAHOO_TTL_MS = 15000;
 
@@ -214,14 +213,6 @@ export const SOURCE_LABELS: Record<SourceName, string> = {
   yahoo: 'Yahoo Finance',
   mock: '模擬數據',
 };
-
-interface MarketDataState {
-  source: SourceName;
-  lastFugleHttp200: boolean;
-  lastFugleNoPrice: number;
-  lastFugleError: string;
-  lastFetchedAt: number;
-}
 
 export const MarketData = {
   source: 'mock' as SourceName,
@@ -264,7 +255,7 @@ async function fetchFromFuguo(): Promise<boolean> {
       MarketData.lastFugleHttp200 = true;
       const data = await r.json();
       const parsed = parseQuote(data);
-      if (parsed.price != null && Number.isFinite(parsed.price)) {
+      if (parsed !== null && parsed.price != null && Number.isFinite(parsed.price)) {
         q.applyReal(parsed.price, parsed.open ?? q.open, { kind: parsed.kind, previousClose: parsed.previousClose });
         anyOk = true;
       } else {
@@ -291,177 +282,160 @@ async function fallbackYahoo(): Promise<void> {
     if (!meta) return;
     const q = quoteMap[codes[0] === '^TWSE' ? '^TWSE' : codes[0].replace('.TW', '')];
     if (q) {
-      const close = meta.regularMarketPrice;
-      if (Number.isFinite(close)) {
-        q.applyReal(close, meta.open ?? q.open, { kind: 'close', previousClose: meta.chartPreviousClose ?? meta.previousClose ?? null });
+      const close: unknown = meta.regularMarketPrice;
+      if (typeof close === 'number' && Number.isFinite(close)) {
+        const openRaw: unknown = meta.open;
+        const open: number = (typeof openRaw === 'number' && Number.isFinite(openRaw)) ? openRaw : q.open;
+        const prevRaw: unknown = meta.chartPreviousClose ?? meta.previousClose;
+        const prev: number | null = (typeof prevRaw === 'number' && Number.isFinite(prevRaw)) ? prevRaw : null;
+        q.applyReal(close, open, { kind: 'close', previousClose: prev });
       }
     }
   } catch { /* keep mock */ }
 }
 
-// ---------- Helpers ----------
-function fmt(n: number, digits = 2): string {
-  return n.toLocaleString('zh-TW', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+// ---------- Portfolio calc ----------
+function cur(code: string): number | null {
+  const q = quoteMap[code];
+  return q ? q.price : null;
 }
-function pct(now: number, ref: number): number {
-  return ref !== 0 ? ((now - ref) / ref) * 100 : 0;
+
+export function calcPnl(): Array<{ code: string; name: string; qty: number; cost: number; price: number | null; value: number | null; pnl: number | null; pnlPct: number | null; src: string; kind: string }> {
+  return holdings.map(h => {
+    const q = quoteMap[h.code];
+    const p = q ? q.price : null;
+    const value = p != null ? p * h.qty : null;
+    const pnl = p != null ? p * h.qty - h.cost * h.qty : null;
+    const pnlPct = (p != null && h.cost > 0) ? (p / h.cost - 1) * 100 : null;
+    return {
+      code: h.code, name: h.name, qty: h.qty, cost: h.cost,
+      price: p, value, pnl, pnlPct,
+      src: q ? q.priceKind : 'mock',
+      kind: q ? q.priceKind : 'mock',
+    };
+  });
 }
-function signClass(v: number): string {
-  return v > 0 ? 'up' : v < 0 ? 'down' : '';
+
+export function signFmt(v: number | null, digits = 2): string {
+  if (v == null) return '—';
+  const s = v >= 0 ? '+' : '';
+  return s + v.toLocaleString('zh-TW', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
-function signFmt(v: number, digits = 2): string {
-  return (v > 0 ? '+' : '') + fmt(v, digits);
+
+export function fmt(v: number | null, digits = 2): string {
+  if (v == null) return '—';
+  return v.toLocaleString('zh-TW', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 // ---------- Live tab ----------
-function renderLive(): void {
-  const el = document.getElementById('live-table') as HTMLTableSectionElement | null;
-  if (!el) return;
-  const src = MarketData.source;
-  const srcLabel = SOURCE_LABELS[src] || src;
-  const fugleNote = src === 'fuguo_waiting' ? '；富果暫未回傳，已回退 ' + (MarketData.lastFugleError || 'Yahoo') : '';
-  el.innerHTML = `
-    <thead>
-      <tr><th>代號</th><th>名稱</th><th>類別</th><th>現價</th><th>漲跌幅</th><th>來源</th></tr>
-    </thead>
-    <tbody>
-      ${quotes.map(q => {
-        const chg = q.previousClose != null ? q.price - q.previousClose : q.price - q.open;
-        const chgPct = q.previousClose != null ? pct(q.price, q.previousClose) : pct(q.price, q.open);
-        const kind = q.priceKind === 'mock' ? '模擬' : q.priceKind === 'close' ? '收盤' : '即時';
-        return `<tr>
-          <td class="mono">${q.code}</td>
-          <td>${q.name}</td>
-          <td>${q.type === 'index' ? '指數' : q.type === 'etf' ? 'ETF' : '個股'}</td>
-          <td class="num ${signClass(chg)}">${fmt(q.price)}</td>
-          <td class="num ${signClass(chgPct)}">${signFmt(chgPct)}%</td>
-          <td><span class="src-badge ${src}">${srcLabel}（${kind}）</span></td>
-        </tr>`;
-      }).join('')}
-    </tbody>`;
-  const status = document.getElementById('live-status');
-  if (status) status.textContent = `即時報價來源：${srcLabel}（更新於 ${new Date().toLocaleTimeString('zh-TW')}）` + fugleNote;
-}
-
-// ---------- PnL tab ----------
-function renderPnl(): void {
-  const el = document.getElementById('pnl-table') as HTMLTableSectionElement | null;
-  if (!el) return;
-  const rows = holdings.map(h => {
-    const q = quoteMap[h.code];
-    const cur = q ? q.price : h.cost;
-    const mv = h.qty * cur;
-    const costTotal = h.qty * h.cost;
-    const pnl = mv - costTotal;
-    const pnlPct = pct(mv, costTotal);
-    return { ...h, cur, mv, costTotal, pnl, pnlPct };
-  });
-  const totalMv = rows.reduce((s, r) => s + r.mv, 0);
-  const totalCost = rows.reduce((s, r) => s + r.costTotal, 0);
-  const totalPnl = totalMv - totalCost;
-  el.innerHTML = `
-    <thead>
-      <tr><th>代號</th><th>名稱</th><th>持股</th><th>成本</th><th>現價</th><th>市值</th><th>損益額</th><th>損益率</th></tr>
-    </thead>
-    <tbody>
-      ${rows.map(r => `<tr>
-        <td class="mono">${r.code}</td>
-        <td>${r.name}</td>
-        <td class="num">${r.qty.toLocaleString('zh-TW')}</td>
-        <td class="num">${fmt(r.cost)}</td>
-        <td class="num">${fmt(r.cur)}</td>
-        <td class="num">${fmt(r.mv, 0)}</td>
-        <td class="num ${signClass(r.pnl)}">${signFmt(r.pnl, 0)}</td>
-        <td class="num ${signClass(r.pnlPct)}">${signFmt(r.pnlPct)}%</td>
-      </tr>`).join('')}
-    </tbody>
-    <tfoot>
-      <tr class="total-row">
-        <td colspan="5">合計</td>
-        <td class="num">${fmt(totalMv, 0)}</td>
-        <td class="num ${signClass(totalPnl)}">${signFmt(totalPnl, 0)}</td>
-        <td class="num ${signClass(pct(totalMv, totalCost))}">${signFmt(pct(totalMv, totalCost))}%</td>
-      </tr>
-    </tfoot>`;
-}
-
-// ---------- Portfolio tab ----------
-function renderPortfolio(): void {
-  const el = document.getElementById('portfolio-list') as HTMLElement | null;
-  if (!el) return;
-  const totalMv = holdings.reduce((s, h) => s + h.qty * (quoteMap[h.code]?.price ?? h.cost), 0);
-  el.innerHTML = holdings.map(h => {
-    const q = quoteMap[h.code];
-    const mv = h.qty * (q?.price ?? h.cost);
-    const weight = totalMv > 0 ? (mv / totalMv) * 100 : 0;
-    return `<div class="port-item">
-      <div class="port-head">
-        <span class="mono">${h.code}</span>
-        <span>${h.name}</span>
-        <span class="num">${weight.toFixed(1)}%</span>
-      </div>
-      <div class="port-bar"><div style="width:${weight}%"></div></div>
-      <div class="port-meta">持股 ${h.qty.toLocaleString('zh-TW')} ｜ 市值 ${fmt(mv, 0)} ｜ 成本 ${fmt(h.cost)}</div>
-    </div>`;
+export function renderLive(): void {
+  const tb = document.getElementById('live-tbody') as HTMLTableSectionElement;
+  if (!tb) return;
+  tb.innerHTML = quotes.map(q => {
+    const chg = q.open > 0 ? (q.price - q.open) / q.open * 100 : 0;
+    const dir = chg > 0 ? 'up' : chg < 0 ? 'down' : '';
+    return `<tr>
+      <td class="mono">${q.code}</td><td>${q.name}</td>
+      <td class="num mono">${fmt(q.price, q.base < 100 ? 2 : 1)}</td>
+      <td class="num mono ${dir}">${signFmt(chg, 2)}%</td>
+      <td class="mono small" title="${SOURCE_LABELS[MarketData.source] || MarketData.source}">${srcLabel(q)}</td>
+    </tr>`;
   }).join('');
 }
 
-// ---------- Dividends tab ----------
-function renderDividends(): void {
-  const el = document.getElementById('dividend-list') as HTMLElement | null;
-  if (!el) return;
-  const total = dividends.reduce((s, d) => s + d.qty * d.amount, 0);
-  el.innerHTML = `
-    <div class="div-summary">本年度預估領息總額：<strong class="num">${fmt(total, 0)} 元</strong></div>
-    <table class="mini-table">
-      <thead><tr><th>代號</th><th>名稱</th><th>持股</th><th>每股股利</th><th>預估領息</th><th>除息日</th></tr></thead>
-      <tbody>
-        ${dividends.map(d => `<tr>
-          <td class="mono">${d.code}</td>
-          <td>${d.name}</td>
-          <td class="num">${d.qty.toLocaleString('zh-TW')}</td>
-          <td class="num">${fmt(d.amount)}</td>
-          <td class="num">${fmt(d.qty * d.amount, 0)}</td>
-          <td>${d.date}</td>
-        </tr>`).join('')}
-      </tbody>
-    </table>`;
+function srcLabel(q: Quote): string {
+  if (MarketData.source === 'mock') return '模擬';
+  return q.hasReal ? (MarketData.source === 'fuguo' ? '富果' : 'Yahoo') : '模擬';
 }
 
-// ---------- Analysis tab ----------
+// ---------- PnL tab ----------
+export function renderPnl(): void {
+  const rows = calcPnl();
+  const tbody = document.getElementById('pnl-tbody') as HTMLTableSectionElement | null;
+  if (tbody) {
+    tbody.innerHTML = rows.map(r => `<tr>
+      <td class="mono">${r.code}</td><td>${r.name}</td>
+      <td class="num mono">${r.qty.toLocaleString()}</td>
+      <td class="num mono">${fmt(r.cost)}</td>
+      <td class="num mono">${fmt(r.price)}</td>
+      <td class="num mono">${signFmt(r.pnl, 0)}</td>
+      <td class="num mono ${r.pnlPct != null && r.pnlPct < 0 ? 'down' : 'up'}">${signFmt(r.pnlPct, 2)}%</td>
+    </tr>`).join('');
+  }
+  const tot = rows.reduce((acc, r) => {
+    if (r.pnl != null) { acc.value += r.value!; acc.pnl += r.pnl; }
+    return acc;
+  }, { value: 0, pnl: 0 });
+  const el = document.getElementById('pnl-total') as HTMLElement | null;
+  if (el) el.innerHTML = `市值合計 <b class="mono">${fmt(tot.value, 0)}</b> ｜ 損益 <b class="mono ${tot.pnl < 0 ? 'down' : 'up'}">${signFmt(tot.pnl, 0)}</b>`;
+}
+
+// ---------- Portfolio tab ----------
+export function renderPortfolio(): void {
+  const c = calcPnl();
+  const total = c.reduce((s, r) => s + (r.value ?? 0), 0);
+  const alloc = document.getElementById('alloc') as HTMLDivElement | null;
+  if (alloc) {
+    alloc.innerHTML = c.map(r => {
+      const pct = total > 0 ? ((r.value ?? 0) / total * 100) : 0;
+      return `<div class="alloc-row">
+        <span class="alloc-label">${r.name}</span>
+        <div class="alloc-bar"><div style="width:${pct}%"></div></div>
+        <span class="alloc-pct mono">${pct.toFixed(1)}%</span>
+      </div>`;
+    }).join('');
+  }
+  const dt = document.getElementById('txns-table-body') as HTMLTableSectionElement | null;
+  if (dt) {
+    dt.innerHTML = txns.map(t => `<tr>
+      <td class="mono">${t.date}</td><td class="mono">${t.code}</td><td>${t.name}</td>
+      <td class="num mono">${t.side === 'buy' ? '買入' : '賣出'}</td>
+      <td class="num mono">${t.qty.toLocaleString()}</td><td class="num mono">${fmt(t.price)}</td>
+    </tr>`).join('');
+  }
+}
+
+export function renderDividends(): void {
+  const dt = document.getElementById('div-table-body') as HTMLTableSectionElement | null;
+  if (dt) {
+    dt.innerHTML = dividends.map(d => `<tr>
+      <td class="mono">${d.date}</td><td class="mono">${d.code}</td><td>${d.name}</td>
+      <td class="num mono">${d.qty.toLocaleString()}</td><td class="num mono">${fmt(d.amount)}</td>
+    </tr>`).join('');
+  }
+}
+
+// ---------- Analysis canvas ----------
 function drawAnalysis(): void {
-  const canvas = document.getElementById('analysis-canvas') as HTMLCanvasElement | null;
+  const canvas = document.getElementById('analysis') as HTMLCanvasElement | null;
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const q = quoteMap['0050'];
-  if (!q) return;
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  const data = q._hist;
-  const min = Math.min(...data), max = Math.max(...data);
-  const range = max - min || 1;
+  const data = quoteMap['0050']?._hist.slice(-30) ?? [];
+  if (!data.length) return;
+  const min = Math.min(...data), max = Math.max(...data), range = (max - min) || 1;
   ctx.beginPath();
-  ctx.strokeStyle = '#4f8cff';
-  ctx.lineWidth = 2;
   data.forEach((v, i) => {
     const x = (i / (data.length - 1)) * w;
     const y = h - ((v - min) / range) * (h - 20) - 10;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
-  ctx.stroke();
-  ctx.fillStyle = '#888';
-  ctx.font = '11px monospace';
+  ctx.strokeStyle = '#0af'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#666'; ctx.font = '11px monospace';
+  ctx.fillText(fmt(min, 2), 8, h - 2);
+  ctx.fillText(fmt(max, 2), 8, 10);
   ctx.fillText('0050 近 ' + data.length + ' 筆走勢（模擬）', 8, h - 4);
 }
 
 // ---------- Tab switching ----------
-document.querySelectorAll('.tab').forEach(tab => {
+document.querySelectorAll<HTMLDivElement>('.tab').forEach((tab: HTMLDivElement) => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll<HTMLDivElement>('.tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
-    const tabId = tab.dataset.tab as string;
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    const tabId = (tab.dataset.tab as string) || '';
+    document.querySelectorAll<HTMLDivElement>('.tab-panel').forEach(p => p.classList.remove('active'));
     const panel = document.getElementById('tab-' + tabId);
     if (panel) panel.classList.add('active');
     if (tabId === 'analysis') drawAnalysis();
