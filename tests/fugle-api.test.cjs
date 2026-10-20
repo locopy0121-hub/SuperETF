@@ -14,7 +14,7 @@ test('遷移舊版股票與加權指數代號', () => {
   assert.equal(api.normalizeSymbol('TWSE:0050'), '0050');
   assert.equal(api.normalizeSymbol('2330.TW'), '2330');
   assert.equal(api.normalizeSymbol('^TWSE'), 'IX0001');
-  assert.equal(api.normalizeSymbol('TWSE'), 'IR0001');
+  assert.equal(api.normalizeSymbol('TWSE'), 'IX0001');
   assert.equal(api.buildQuoteUrl('', '^TWSE').endsWith('/IX0001'), true);
 });
 test('不允許 API Key 送往不安全主機', () => {
