@@ -4,13 +4,12 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-  schedule:
-    - cron: '*/30 * * * *'
 
 jobs:
   apk:
     name: Build debug APK
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,17 +28,13 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Compile TypeScript
+      - name: Verify Fugle route and UI regressions
         run: npm run build
-
-      - name: Verify Fugle route regressions
-        run: npm test
 
       - name: Stage web assets into www/
         run: |
           rm -rf www && mkdir -p www
-          cp index.html styles.css www/
-          cp -r dist www/dist
+          cp index.html app.js fugle-api.js styles.css www/
           [ -d "assets" ] && cp -r assets www/ || true
 
       - name: Generate Capacitor android platform if missing

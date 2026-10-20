@@ -1,0 +1,614 @@
+(() => {
+'use strict';
+
+const VERSION = '1.3.2';
+const FugleAPI = globalThis.SuperETFFugleAPI;
+if (!FugleAPI) throw new Error('富果 API 工具未載入');
+
+// ---------- API 設定（存於 localStorage，由「設置」tab 管理）----------
+const LS_API  = 'setf_api_config';
+const API_DEFAULTS = {
+  fuguo: {
+    enabled:  false,
+    baseUrl:  FugleAPI.REST_BASE,
+    apiKey:   '',
+    symbols:  {},   // 例：{ '0050': 'TWSE:0050', '^TWSE': 'TWSE' }
+  },
+};
+function loadApiConfig() {
+  try {
+    const raw = localStorage.getItem(LS_API);
+    if (!raw) return structuredClone(API_DEFAULTS);
+    const saved = JSON.parse(raw);
+    return {
+      fuguo: {
+        enabled:  !!saved?.fuguo?.enabled,
+        baseUrl:  saved?.fuguo?.baseUrl  || FugleAPI.REST_BASE,
+        apiKey:   saved?.fuguo?.apiKey   || '',
+        symbols:  saved?.fuguo?.symbols  || {},
+      },
+    };
+  } catch { return structuredClone(API_DEFAULTS); }
+}
+function saveApiConfig(cfg) {
+  try { localStorage.setItem(LS_API, JSON.stringify(cfg)); } catch {}
+}
+let apiCfg = loadApiConfig();
+
+// ---------- Seed data ----------
+const SEED_QUOTES = [
+  { code: '^TWSE',  name: '加權指數',     type: 'index', base: 23500, drift: 0.001,  yahoo: '^TWII'   },
+  { code: '0050',   name: '元大50',       type: 'etf',   base: 18.35, drift: 0.0005, yahoo: '0050.TW'  },
+  { code: '0056',   name: '元大高股息',       type: 'etf',   base: 31.50, drift: 0.0004, yahoo: '0056.TW'  },
+  { code: '00859',  name: '00859（待核對）',   type: 'etf',   base: 15.80, drift: 0.0006, yahoo: '00859.TW' },
+  { code: '2884',   name: '玉山金',         type: 'stock', base: 42.50, drift: 0.0008, yahoo: '2884.TW'  },
+  { code: '2330',   name: '台積電',       type: 'stock', base: 1010,  drift: 0.0004, yahoo: '2330.TW'  },
+  { code: '6605',   name: '帝寶',       type: 'stock', base: 485,   drift: 0.0009, yahoo: '6605.TW'  },
+];
+
+const SEED_HOLDINGS = [
+  { code: '0050', name: '元大50',  qty: 5000, cost: 18.02 },
+  { code: '2330', name: '台積電',  qty: 50,   cost: 985.00 },
+  { code: '0056', name: '國泰AP',  qty: 2000, cost: 30.80 },
+];
+
+const SEED_DIVIDENDS = [
+  { code: '0050', name: '元大50', qty: 5000, amount: 0.22, date: '2026-03-15' },
+  { code: '2330', name: '台積電', qty: 50,   amount: 18.5, date: '2026-04-20' },
+];
+
+const SEED_TXNS = [
+  { code: '0050', name: '元大50', qty: +5000, price: 18.02, date: '2026-01-10', side: 'buy' },
+  { code: '2330', name: '台積電', qty: +50,   price: 985.00, date: '2026-01-12', side: 'buy' },
+  { code: '0056', name: '國泰AP', qty: +2000, price: 30.80, date: '2026-02-05', side: 'buy' },
+];
+
+// ---------- State (localStorage-backed) ----------
+const LS = { holdings: 'setf_holdings', dividends: 'setf_dividends', txns: 'setf_txns' };
+function load(key, fallback) {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; }
+  catch { return fallback; }
+}
+function save(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+
+let holdings  = load(LS.holdings,  SEED_HOLDINGS);
+let dividends = load(LS.dividends, SEED_DIVIDENDS);
+let txns      = load(LS.txns,      SEED_TXNS);
+save(LS.holdings, holdings); save(LS.dividends, dividends); save(LS.txns, txns);
+
+// ---------- Quote ----------
+class Quote {
+  constructor({ code, name, type, base, drift, yahoo }) {
+    this.code = code; this.name = name; this.type = type;
+    this.yahooSymbol = yahoo || (code.endsWith('.TW') ? code : code + '.TW');
+    this.open = null;
+    this.price = null;
+    this.base = base; this.drift = drift;
+    this.high = null; this.low = null;
+    this._hist = [];
+    this.dataSource = 'none';
+    this.updatedInCycle = false;
+    this.hasReal = false;
+    this.previousClose = null;
+    this.priceKind = 'mock';
+  }
+  tick() { /* Never synthesize prices. */ }
+  applyReal(price, open, details = {}) {
+    if (!Number.isFinite(price) || price <= 0) return;
+    if (!this.hasReal) this._hist = [];
+    this.high = Number.isFinite(details.high) && details.high>0 ? details.high :
+      (Number.isFinite(this.high) ? Math.max(this.high,price) : price);
+    this.low = Number.isFinite(details.low) && details.low>0 ? details.low :
+      (Number.isFinite(this.low) ? Math.min(this.low,price) : price);
+    if (Number.isFinite(open) && open>0) this.open = open;
+    this.price = price;
+    this.previousClose = details.previousClose ?? this.previousClose;
+    this.priceKind = details.kind ?? 'trade';
+    this.hasReal = true;
+    this.dataSource = details.source || 'fuguo';
+    this.updatedAt = Date.now();
+    this.updatedInCycle = true;
+    this._hist.push(price); if (this._hist.length>60) this._hist.shift();
+  }
+  get pctChg() {
+    const base = this.previousClose > 0 ? this.previousClose : this.open;
+    return base > 0 && Number.isFinite(this.price) ? (this.price - base) / base : 0;
+  }
+}
+
+const quotes   = SEED_QUOTES.map(q => new Quote(q));
+const quoteMap = Object.fromEntries(quotes.map(q => [q.code, q]));
+function ensureHoldingQuote(h) {
+  const code = String(h.code || '').trim().toUpperCase();
+  if (!code || quoteMap[code]) return;
+  try { FugleAPI.normalizeSymbol(code); } catch { return; }
+  const q = new Quote({code, name:String(h.name || code), type:'stock', base:0, drift:0, yahoo:code+'.TW'});
+  quotes.push(q); quoteMap[code] = q;
+}
+holdings.forEach(ensureHoldingQuote);
+
+function fmt(n,digits=2) {
+  return n==null || !Number.isFinite(Number(n)) ? '—' :
+    Number(n).toLocaleString('en-US',{minimumFractionDigits:digits,maximumFractionDigits:digits});
+}
+function esc(s) {
+  return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function pctFmt(p) { return (p >= 0 ? '+' : '') + (p * 100).toFixed(2) + '%'; }
+function cls(p) { return p > 0.0005 ? 'up' : p < -0.0005 ? 'down' : 'flat'; }
+
+// ============================================================
+// MarketData service — 富果API 主 / Yahoo 備 / 離線模擬兜底
+// ============================================================
+const SOURCE_LABELS = {
+  fuguo: '來源：富果 API',
+  fuguo_waiting: '富果 API 已連線（尚無行情）',
+  yahoo: '來源：Yahoo Finance',
+  mock:  '無可用行情（不使用模擬價）',
+};
+
+const MarketData = {
+  source: 'mock',
+  lastUpdated: 0,
+  lastFugleError: '',
+  lastFugleHttp200: 0,
+  lastFugleNoPrice: 0,
+
+  setSource(name) {
+    this.source = name;
+    const badge = document.getElementById('data-source-badge');
+    const label = document.getElementById('last-updated');
+    if (badge) {
+      badge.textContent = SOURCE_LABELS[name] || name;
+      badge.className = 'source-badge ' + name;
+    }
+    if (label && this.lastUpdated) {
+      label.textContent = '更新於 ' + new Date(this.lastUpdated).toLocaleTimeString('zh-TW', { hour12: false });
+    }
+    updateSourcePriorityBadges();
+  },
+
+  // REST v1.0：合法路由與金鑰標頭，逐檔隔離 404。
+  async fetchFuguo() {
+    const f = apiCfg.fuguo;
+    if (!f.enabled || !f.apiKey) return 0;
+    this.lastFugleError = '';
+    this.lastFugleHttp200 = 0;
+    this.lastFugleNoPrice = 0;
+    let base;
+    try { base = FugleAPI.normalizeRestBase(f.baseUrl); }
+    catch (e) { this.lastFugleError = e.message; return 0; }
+
+    const responses = await Promise.all(quotes.map(async q => {
+      const symbol = f.symbols?.[q.code] || q.code;
+      try {
+        const url = FugleAPI.buildQuoteUrl(base, symbol);
+        const r = await fetch(url, {
+          headers: { 'X-API-KEY': f.apiKey, Accept: 'application/json' },
+          signal: AbortSignal.timeout(9000),
+        });
+        if (!r.ok) throw new Error(FugleAPI.httpError(r.status, q.code));
+        const data = await r.json();
+        const value = FugleAPI.parseQuote(data);
+        return { q, data, value };
+      } catch (e) {
+        if (!this.lastFugleError) this.lastFugleError = e.message;
+        console.warn('[SuperETF] 富果報價失敗：' + q.code + '：' + e.message);
+        return null;
+      }
+    }));
+    this.lastFugleHttp200 = responses.filter(Boolean).length;
+    const valid = responses.filter(item => item && item.value);
+    this.lastFugleNoPrice = this.lastFugleHttp200 - valid.length;
+    for (const {q, data, value} of valid) {
+      q.applyReal(value.price, value.open, {...value,source:'fuguo'});
+      const record = data?.data && typeof data.data === 'object' ? data.data : data;
+      if (typeof record.name === 'string' && record.name) q.name = record.name;
+    }
+    return valid.length;
+  },
+
+  // Fallback only for instruments not updated from Fugle this cycle.
+  async fetchYahoo(targets=quotes) {
+    const responses=await Promise.all(targets.map(async q=>{
+      try {
+        const url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(q.yahooSymbol)+'?interval=1d&range=5d';
+        const r=await fetch(url,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(9000)});
+        if(!r.ok)return null;
+        const meta=(await r.json())?.chart?.result?.[0]?.meta;
+        const price=Number(meta?.regularMarketPrice??meta?.chartPreviousClose);
+        if(!Number.isFinite(price)||price<=0)return null;
+        const open=Number(meta.regularMarketOpen??meta.chartPreviousClose)||price;
+        const prev=Number(meta.chartPreviousClose??meta.previousClose);
+        return {q,price,open,prev:Number.isFinite(prev)&&prev>0?prev:null};
+      }catch(e){console.warn('[SuperETF] Yahoo '+q.code+': '+e.message);return null;}
+    }));
+    const valid=responses.filter(Boolean);
+    valid.forEach(v=>v.q.applyReal(v.price,v.open,{kind:'close',previousClose:v.prev,source:'yahoo'}));
+    return valid.length;
+  },
+  async sync() {
+    quotes.forEach(q=>{q.updatedInCycle=false;});
+    const fu=await this.fetchFuguo();
+    const yh=await this.fetchYahoo(quotes.filter(q=>!q.updatedInCycle));
+    if(fu||yh){this.lastUpdated=Date.now();this.setSource(fu?'fuguo':'yahoo');return this.source;}
+    if(this.lastFugleHttp200){this.setSource('fuguo_waiting');return 'fuguo_waiting';}
+    this.setSource('mock');return 'mock';
+  },
+};
+
+let marketSyncPending = false;
+async function marketLoop() {
+  if (marketSyncPending) return;
+  marketSyncPending = true;
+  try { await MarketData.sync(); renderLive(); }
+  finally { marketSyncPending = false; }
+}
+marketLoop();
+setInterval(()=>{if(isMarketOpen())marketLoop();},30000);
+setInterval(()=>{if(!isMarketOpen())marketLoop();},300000);
+
+// ---------- Session badge ----------
+function isMarketOpen() {
+  const now = new Date();
+  const day = new Date(now.toLocaleString('en-US',{timeZone:'Asia/Taipei'})).getDay();
+  if (day === 0 || day === 6) return false;
+  const hm = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(now).split(':').map(Number);
+  const t=hm[0]*60+hm[1];
+  return t>=540 && t<810; // Mon-Fri 09:00-13:30; holiday schedule is not inferred
+}
+function updateBadge() {
+  const el = document.getElementById('session-badge');
+  if (isMarketOpen()) { el.textContent = '一般交易時段（休市依證交所）'; el.className = 'session-badge open'; }
+  else { el.textContent = '非一般交易時段'; el.className = 'session-badge closed'; }
+}
+setInterval(updateBadge, 30000); updateBadge();
+
+// ---------- Tabs ----------
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'analysis') drawAnalysis();
+    if (btn.dataset.tab === 'settings') loadSettingsForm();
+  });
+});
+
+// ---------- Live grid ----------
+let liveFilter = 'all';
+document.querySelectorAll('.chip').forEach(c => {
+  c.addEventListener('click', () => {
+    document.querySelectorAll('.chip').forEach(x => x.classList.remove('active'));
+    c.classList.add('active');
+    liveFilter = c.dataset.type;
+    renderLive();
+  });
+});
+
+function renderLive() {
+  const grid = document.getElementById('live-grid');
+  if (!grid) return;
+  const list = quotes.filter(q => liveFilter === 'all' || q.type === liveFilter);
+  grid.innerHTML = list.map(q => {
+    const p = q.pctChg;
+    const typeLabel = q.type === 'index' ? '指數' : q.type === 'etf' ? 'ETF' : '個股';
+    const kindLabel = q.hasReal
+      ? ({reference: '參考', previous: '昨收', trial: '試撮'})[q.priceKind] || ''
+      : '';
+    return `<div class="live-card">
+      <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
+      <div class="name">${esc(q.name)}</div>
+      <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
+      <div class="chg ${cls(p)}">${q.hasReal ? pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource) : "未取得"}</span></div>
+    </div>`;
+  }).join('');
+}
+
+// ---------- PnL wall ----------
+function renderPnl() {
+  const summary=document.getElementById('pnl-summary'),wall=document.getElementById('pnl-wall');
+  let totalCost=0,totalValue=0,covered=0;
+  const rows=holdings.map(h=>{
+    const q=quoteMap[h.code],real=!!q?.hasReal && Number.isFinite(q.price)&&q.price>0;
+    const price=real?q.price:null,cost=h.cost*h.qty;
+    const pnl=real?(price-h.cost)*h.qty:null;
+    const pct=real&&h.cost>0?(price-h.cost)/h.cost:null;
+    if(real){totalCost+=cost;totalValue+=price*h.qty;covered++;}
+    return {h,q,price,pnl,pct};
+  });
+  const totalPnl=totalValue-totalCost,totalPct=totalCost?totalPnl/totalCost:0;
+  summary.innerHTML=`<div class="pnl-box"><div class="label">有效行情市值</div><div class="value">NT$ ${fmt(totalValue)}</div></div>
+    <div class="pnl-box"><div class="label">有效行情成本</div><div class="value">NT$ ${fmt(totalCost)}</div></div>
+    <div class="pnl-box"><div class="label">已確認損益</div><div class="value ${cls(totalPct)}">${covered?(totalPnl>=0?'+':'')+fmt(totalPnl):'—'}</div></div>
+    <div class="pnl-box"><div class="label">有效檔數</div><div class="value">${covered}/${holdings.length}</div></div>`;
+  wall.innerHTML=rows.map(({h,q,price,pnl,pct})=>`<div class="pnl-tile">
+    <div class="head"><span>${esc(h.code)} ${esc(h.name)}</span><span>${fmt(h.qty,0)} 股</span></div>
+    <div class="pnl ${cls(pct)}">${pnl===null?'等待有效行情':(pnl>=0?'+':'')+fmt(pnl)+'（'+pctFmt(pct)+'）'}</div>
+    <canvas class="spark" data-code="${esc(h.code)}" width="200" height="34"></canvas>
+    <div style="font-size:11px;color:var(--muted)">現價 ${fmt(price)} · 成本 ${fmt(h.cost)} · ${q?.hasReal?esc(q.dataSource):'未取得'}</div>
+  </div>`).join('');
+  wall.querySelectorAll('.spark').forEach(cv=>{
+    const q=quoteMap[cv.dataset.code],data=q?._hist.slice(-30)||[];
+    if(data.length<2)return;
+    const ctx=cv.getContext('2d');if(!ctx)return;
+    const w=cv.width,height=cv.height,min=Math.min(...data),max=Math.max(...data),range=max-min||1;
+    ctx.strokeStyle=q.pctChg>=0?'#22c55e':'#ef4444';ctx.lineWidth=1.5;ctx.beginPath();
+    data.forEach((v,i)=>{const x=i/(data.length-1)*w,y=height-2-((v-min)/range)*(height-4);
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+    ctx.stroke();
+  });
+}
+
+// ---------- Portfolio ----------
+document.getElementById('btn-add-holding').addEventListener('click', () => {
+  document.getElementById('add-holding-form').classList.toggle('hidden');
+});
+document.getElementById('fh-cancel').addEventListener('click', () => {
+  document.getElementById('add-holding-form').classList.add('hidden');
+});
+document.getElementById('fh-save').addEventListener('click', () => {
+  const code = document.getElementById('fh-code').value.trim();
+  const name = document.getElementById('fh-name').value.trim();
+  const qty  = parseInt(document.getElementById('fh-qty').value)   || 0;
+  const cost = parseFloat(document.getElementById('fh-cost').value) || 0;
+  if(!/^[0-9]{4,6}[A-Za-z]?$/.test(code)||!(qty>0)||!Number.isFinite(cost)||cost<0)
+    return alert('請確認代號、股數與非負成本');
+  const item={code:code.toUpperCase(),name:name||code,qty,cost};
+  holdings.push(item);ensureHoldingQuote(item);
+  txns.push({code:item.code,name:item.name,qty,price:cost,side:'buy',
+    date:new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'})});
+  save(LS.txns,txns);
+  save(LS.holdings, holdings);
+  document.getElementById('add-holding-form').classList.add('hidden');
+  ['fh-code','fh-name','fh-qty','fh-cost'].forEach(id => document.getElementById(id).value = '');
+  renderPortfolio(); renderPnl();
+});
+
+function renderPortfolio() {
+  const body=document.getElementById('portfolio-body');
+  const total=holdings.reduce((s,h)=>{const q=quoteMap[h.code];return s+(q?.hasReal?q.price*h.qty:0);},0);
+  body.innerHTML=holdings.map((h,i)=>{
+    const q=quoteMap[h.code],price=q?.hasReal?q.price:null;
+    const value=price===null?null:price*h.qty,pnl=value===null?null:value-h.cost*h.qty;
+    const pct=value!==null&&total>0?value/total:null;
+    return `<tr><td><strong>${esc(h.code)}</strong></td><td>${esc(h.name)}</td>
+      <td>${fmt(h.qty,0)}</td><td>${fmt(h.cost)}</td><td class="${cls(q?.pctChg||0)}">${fmt(price)}</td>
+      <td class="${cls(pnl)}">${pnl===null?'—':(pnl>=0?'+':'')+fmt(pnl)}</td>
+      <td>${pct===null?'—':(pct*100).toFixed(1)+'%'}</td>
+      <td><button class="del-btn" data-i="${i}" title="移除">×</button></td></tr>`;
+  }).join('');
+  body.querySelectorAll('.del-btn').forEach(b=>b.addEventListener('click',()=>{
+    const i=Number(b.dataset.i);if(!Number.isInteger(i)||i<0||i>=holdings.length)return;
+    holdings.splice(i,1);save(LS.holdings,holdings);renderPortfolio();renderPnl();
+  }));
+  renderTransactions();
+}
+
+function renderTransactions() {
+  const txnEl = document.getElementById('transactions');
+  if (!txnEl) return;
+  txnEl.innerHTML = `<h3>交易紀錄（最新在前）</h3><div class="txn-list">` +
+    [...txns].reverse().slice(0, 10).map(t => `
+      <div class="txn-item">
+        <span class="${t.side === 'buy' ? 'up' : 'down'}">${t.side === 'buy' ? '買入' : '賣出'} ${esc(t.code)} ${Math.abs(t.qty)} 股 @ ${fmt(t.price)}</span>
+        <span class="date">${t.date}</span>
+      </div>`).join('') + '</div>';
+}
+
+// ---------- Dividends ----------
+document.getElementById('btn-add-dividend').addEventListener('click', () => {
+  document.getElementById('add-dividend-form').classList.toggle('hidden');
+});
+document.getElementById('fd-cancel').addEventListener('click', () => {
+  document.getElementById('add-dividend-form').classList.add('hidden');
+});
+document.getElementById('fd-save').addEventListener('click', () => {
+  const code   = document.getElementById('fd-code').value.trim();
+  const name   = document.getElementById('fd-name').value.trim();
+  const qty    = parseInt(document.getElementById('fd-qty').value)    || 0;
+  const amount = parseFloat(document.getElementById('fd-amount').value) || 0;
+  const date   = document.getElementById('fd-date').value || new Date().toISOString().slice(0, 10);
+  if(!code||!(qty>0)||!Number.isFinite(amount)||amount<0||!/^\d{4}-\d{2}-\d{2}$/.test(date))
+    return alert('請確認股息代號、股數、金額及日期');
+  dividends.push({ code, name: name || code, qty, amount, date });
+  save(LS.dividends, dividends);
+  document.getElementById('add-dividend-form').classList.add('hidden');
+  ['fd-code','fd-name','fd-qty','fd-amount','fd-date'].forEach(id => document.getElementById(id).value = '');
+  renderDividends(); renderPnl();
+});
+
+function renderDividends() {
+  const year = new Date().getFullYear().toString();
+  const list = dividends.filter(d => d.date.startsWith(year));
+  const total = list.reduce((s, d) => s + d.qty * d.amount, 0);
+  const yieldPct = holdings.length ? total / (holdings.reduce((s, h) => s + h.cost * h.qty, 0)) : 0;
+  document.getElementById('dividend-summary').innerHTML = `
+    <div class="pnl-box"><div class="label">本年度股息總額</div><div class="value up">NT$ ${fmt(total)}</div></div>
+    <div class="pnl-box"><div class="label">股息率（對成本）</div><div class="value">${(yieldPct * 100).toFixed(2)}%</div></div>`;
+  const el = document.getElementById('dividend-list');
+  el.innerHTML = dividends.length
+    ? dividends.slice().reverse().map(d => `
+      <div class="div-item">
+        <span><strong>${esc(d.code)}</strong> ${esc(d.name)} · ${d.qty} 股 × ${fmt(d.amount)} <span style="color:var(--muted);font-size:12px">${d.date}</span></span>
+        <span class="total">+${fmt(d.qty * d.amount)}</span>
+      </div>`).join('')
+    : '<div style="color:var(--muted);padding:20px;text-align:center">尚無股息紀錄</div>';
+}
+
+// ---------- Analysis ----------
+function drawAnalysis() {
+  const canvas = document.getElementById('analysis-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const t    = quoteMap['^TWSE'];
+  if (!t) return;
+  const data = t._hist;
+  if(!data.length){document.getElementById('analysis-notes').textContent='尚無有效加權指數行情；不顯示模擬走勢。';return;}
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const up = data[data.length - 1] >= data[0];
+
+  ctx.strokeStyle = '#2a3042'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = (h - 40) * i / 4 + 20;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - 20 - ((v - min) / range) * (h - 40);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  const vwap   = data.reduce((s, v) => s + v, 0) / data.length;
+  const dayRng = (t.high - t.low) / t.open;
+  document.getElementById('analysis-metrics').innerHTML = `
+    <div class="metric"><div class="label">加權開盤</div><div class="value">${fmt(t.open)}</div></div>
+    <div class="metric"><div class="label">現價</div><div class="value ${cls(t.pctChg)}">${fmt(t.price)}</div></div>
+    <div class="metric"><div class="label">日區間</div><div class="value">${fmt(t.low)} – ${fmt(t.high)}</div></div>
+    <div class="metric"><div class="label">近筆均價（非VWAP）</div><div class="value">${fmt(vwap)}</div></div>
+    <div class="metric"><div class="label">日波動度</div><div class="value">${(dayRng * 100).toFixed(2)}%</div></div>`;
+
+  const srcLabel = SOURCE_LABELS[MarketData.source] || '模擬數據';
+  const h0050    = holdings.find(h => h.code === '0050');
+  document.getElementById('analysis-notes').innerHTML =
+    `<strong style="color:var(--text)">市場解讀</strong>（${srcLabel}）<br>` +
+    `• 加權指數開盤 <b>${fmt(t.open)}</b>，現價 <b class="${cls(t.pctChg)}">${fmt(t.price)}</b>（${pctFmt(t.pctChg)}）。<br>` +
+    `• 日內波動區間 ${fmt(t.low)}–${fmt(t.high)}，區間幅度 ${(dayRng * 100).toFixed(2)}%。<br>` +
+    (h0050 ? `• 0050 持倉 ${h0050.qty.toLocaleString()} 股，成本 ${fmt(h0050.cost)}。` : '');
+}
+
+// ============================================================
+// Settings tab — API 設定存取
+// ============================================================
+function loadSettingsForm() {
+  const f = apiCfg.fuguo;
+  const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val ?? ''; };
+  setVal('cfg-fuguo-baseurl',    (() => { try { return FugleAPI.normalizeRestBase(f.baseUrl); } catch { return f.baseUrl; } })());
+  setVal('cfg-fuguo-key',        f.apiKey);
+  setVal('cfg-fuguo-symbols',    Object.keys(f.symbols).length ? JSON.stringify(f.symbols, null, 2) : '');
+  const chk = document.getElementById('cfg-fuguo-enabled');
+  if (chk) chk.checked = f.enabled;
+  updateSourcePriorityBadges();
+}
+
+function updateSourcePriorityBadges() {
+  const fuBadge = document.getElementById('src-prio-fuguo');
+  if (fuBadge) {
+    if (apiCfg.fuguo.enabled && apiCfg.fuguo.apiKey) {
+      fuBadge.textContent = '已設定';
+      fuBadge.className   = 'source-badge fuguo';
+    } else {
+      const draft = document.getElementById('cfg-fuguo-enabled')?.checked &&
+        document.getElementById('cfg-fuguo-key')?.value.trim();
+      fuBadge.textContent = draft ? '待儲存' : '未設定';
+      fuBadge.className = 'source-badge mock';
+    }
+  }
+}
+
+function parseSymbolsJson(raw) {
+  if (!raw || !raw.trim()) return {};
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) throw new Error();
+    for (const [code, symbol] of Object.entries(obj)) {
+      if (!quoteMap[code] || typeof symbol !== 'string') throw new Error();
+      FugleAPI.normalizeSymbol(symbol);
+    }
+    return obj;
+  } catch {
+    throw new Error('代號對應格式錯誤，請使用 JSON 物件，例如 {"0050":"TWSE:0050"}');
+  }
+}
+
+function setFeedback(msg, ok) {
+  const el = document.getElementById('cfg-feedback');
+  el.textContent = msg;
+  el.className = 'settings-feedback ' + (ok ? 'ok' : 'err');
+}
+
+document.getElementById('cfg-save').addEventListener('click', () => {
+  const f = apiCfg.fuguo;
+  const enabled = document.getElementById('cfg-fuguo-enabled').checked;
+  let baseUrl;
+  try { baseUrl = FugleAPI.normalizeRestBase(document.getElementById('cfg-fuguo-baseurl').value); }
+  catch (e) { setFeedback('Base URL 錯誤：' + e.message, false); return; }
+  const apiKey  = document.getElementById('cfg-fuguo-key').value.trim();
+  if (enabled && !apiKey) { setFeedback('啟用富果 API 前請輸入 API Key', false); return; }
+  let symbols = {};
+  try {
+    symbols = parseSymbolsJson(document.getElementById('cfg-fuguo-symbols').value);
+  } catch (e) {
+    setFeedback(e.message, false);
+    return;
+  }
+
+  apiCfg = { fuguo: { enabled, baseUrl, apiKey, symbols } };
+  saveApiConfig(apiCfg);
+
+  const summary = enabled && baseUrl
+    ? '已保存：富果API 已啟用，即時行情將優先使用富果來源'
+    : '已保存：富果API 未啟用，即時行情將使用 Yahoo Finance';
+  setFeedback(summary, true);
+  updateSourcePriorityBadges();
+  // 立即重新同步一次
+  MarketData.sync().then(src => {
+    const error = enabled && src !== 'fuguo' && !MarketData.lastFugleHttp200
+      ? MarketData.lastFugleError : '';
+    const idle = enabled && MarketData.lastFugleNoPrice > 0 ? '；部分代號 HTTP 200 但盤前尚無價格' : '';
+    setFeedback(summary + '（目前來源：' + (SOURCE_LABELS[src] || src) + '）' +
+      idle + (error ? '；富果診斷：' + error : ''), !error);
+  });
+});
+
+document.getElementById('cfg-test').addEventListener('click', async () => {
+  // 使用畫面上尚未保存的值，避免誤判測試的是舊設定。
+  const input = document.getElementById('cfg-fuguo-baseurl').value;
+  const key = document.getElementById('cfg-fuguo-key').value.trim();
+  if (!key) { setFeedback('請先填入 API Key', false); return; }
+  let url;
+  try { url = FugleAPI.buildQuoteUrl(input, '0050'); }
+  catch (e) { setFeedback('❌ ' + e.message, false); return; }
+  setFeedback('測試中：富果 0050 標準報價路由…', true);
+  try {
+    const r = await fetch(url, { headers: { 'X-API-KEY': key, Accept: 'application/json' } });
+    if (!r.ok) {
+      setFeedback('❌ ' + FugleAPI.httpError(r.status, '0050') + '；URL：' + url, false);
+      return;
+    }
+    const quote = FugleAPI.parseQuote(await r.json());
+    const pending = apiCfg.fuguo.enabled ? '' : '；請按「保存設定」啟用自動更新';
+    setFeedback('✅ 富果 API v1.0 ' + FugleAPI.quoteStatus(quote) + pending, true);
+    updateSourcePriorityBadges();
+  } catch (e) {
+    setFeedback('❌ 網路或 CORS 問題：' + e.message, false);
+  }
+});
+
+// ---------- Tick loop（離線模擬時啟用；有真實資料時跳過 random-walk） ----------
+setInterval(() => {
+  // Prices are fetched, never random-walked.
+  if (document.getElementById('tab-live').classList.contains('active')) renderLive();
+  if (document.getElementById('tab-pnl').classList.contains('active')) renderPnl();
+  if (document.getElementById('tab-portfolio').classList.contains('active')) renderPortfolio();
+  if (document.getElementById('tab-analysis').classList.contains('active')) drawAnalysis();
+}, 2000);
+
+// ---------- Init ----------
+loadSettingsForm();
+renderLive();renderPnl();renderPortfolio();renderDividends();
+for(const [id,value] of [['version-sub','台股資產管理 v'+VERSION],['version-about','v'+VERSION],
+ ['version-footer','SuperETF v'+VERSION+' · 主：富果API / 備：Yahoo Finance']]){
+ const el=document.getElementById(id);if(el)el.textContent=value;
+}
+console.log('SuperETF v'+VERSION);
+
+})();

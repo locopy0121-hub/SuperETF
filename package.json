@@ -1,14 +1,17 @@
 {
-  "name": "SuperETF",
-  "version": "1.3.1",
-  "type": "module",
-  "description": "SuperETF — Super ETF portfolio tracking with Fugle (富果) market data",
+  "name": "superetf",
+  "version": "1.3.2",
+  "private": true,
+  "description": "SuperETF Taiwan ETF asset tracker",
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test tests/fugle-api.test.mjs"
+    "build": "npm test",
+    "test": "node --test tests/*.test.cjs && node --check app.js && node --check fugle-api.js",
+    "typecheck": "node --check app.js && node --check fugle-api.js",
+    "cap:sync": "cap sync android"
   },
-  "devDependencies": {
-    "typescript": "^5.8.0"
+  "dependencies": {
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/cli": "^6.0.0"
   }
 }
