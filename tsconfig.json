@@ -13,10 +13,11 @@
     "useDefineForClassFields": true,
     "skipLibCheck": true,
     "types": [],
-    "noEmit": true,
     "isolatedModules": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
