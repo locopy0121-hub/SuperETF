@@ -1,5 +1,14 @@
-node_modules/
-dist/
-www/
-android/
-.DS_Store
+{
+  "name": "SuperETF",
+  "version": "1.3.1",
+  "type": "module",
+  "description": "SuperETF — Super ETF portfolio tracking with Fugle (富果) market data",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/fugle-api.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0"
+  }
+}
