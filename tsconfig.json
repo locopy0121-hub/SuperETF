@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2020",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noImplicitAny": true,
+    "noImplicitOverride": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "useDefineForClassFields": true,
+    "skipLibCheck": true,
+    "types": [],
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
