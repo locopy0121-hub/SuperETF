@@ -60,8 +60,17 @@ interface RawQuotePayload {
 
 // REST 200 only means request success; premarket may have referencePrice but no trade.
 export function parseQuote(data: unknown): ParsedQuote | null {
-  const dRaw = (data?.data && typeof data.data === 'object' && !Array.isArray(data.data)) ? data.data : data;
-  const d = dRaw as RawQuotePayload | null | undefined;
+  // 先安全地取出 data.data（若存在），否則直接使用 data 本身
+  let payload: unknown;
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const maybeObj = data as Record<string, unknown>;
+    const inner = maybeObj['data'];
+    payload = (inner && typeof inner === 'object' && !Array.isArray(inner)) ? inner : data;
+  } else {
+    payload = data;
+  }
+
+  const d = payload as RawQuotePayload | null | undefined;
   if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
   const record = d as unknown as Record<string, unknown>;
 
