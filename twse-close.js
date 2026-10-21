@@ -30,15 +30,21 @@ function taipeiParts(date=new Date()){
  return {date:[get('year'),get('month'),get('day')].join('-'),
   weekday:get('weekday'),minutes:Number(get('hour'))*60+Number(get('minute'))};
 }
-function eligibleDate(recordDate,now=new Date(),holidays=[]){
+function lastCompletedTradingDate(now=new Date(),holidays=[]){
  const p=taipeiParts(now);
- if(!recordDate||recordDate>p.date)return false;
- const old=new Date(recordDate+'T00:00:00Z').getTime();
- const today=new Date(p.date+'T00:00:00Z').getTime();
- if(!Number.isFinite(old)||today-old>10*86400000)return false;
- const closed=p.weekday==='Sat'||p.weekday==='Sun'||holidays.includes(p.date);
- if(recordDate===p.date)return p.minutes>=13*60+45;
- return closed;
+ const d=new Date(p.date+'T00:00:00Z');
+ // Before the official EOD publication window, yesterday's completed session is current.
+ if(p.minutes<13*60+45)d.setUTCDate(d.getUTCDate()-1);
+ for(let n=0;n<14;n++){
+  const day=d.toISOString().slice(0,10),weekday=d.getUTCDay();
+  if(weekday!==0&&weekday!==6&&!holidays.includes(day))return day;
+  d.setUTCDate(d.getUTCDate()-1);
+ }
+ return null;
+}
+function eligibleDate(recordDate,now=new Date(),holidays=[]){
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(String(recordDate)))return false;
+ return recordDate===lastCompletedTradingDate(now,holidays);
 }
 function parsedChange(raw){
  const text=String(raw??'').trim();
@@ -134,7 +140,7 @@ async function loadFundamentals(code,{fetcher}={}){
  const fund=find(funds,['基金代號','證券代號','基金證券代號','Code']);
  return {ratios:fundamentalsFromRow(ratio),company:company??null,fund:fund??null};
 }
-const api={URLS,num,positive,isoDate,taipeiParts,eligibleDate,parseDaily,parseIndex,parseDailyList,
+const api={URLS,num,positive,isoDate,taipeiParts,lastCompletedTradingDate,eligibleDate,parseDaily,parseIndex,parseDailyList,
  loadOfficial,loadFundamentals,clearCache:()=>cache.clear()};
 if(typeof module==='object'&&module.exports)module.exports=api;
 root.SuperETFTWSE=api;
