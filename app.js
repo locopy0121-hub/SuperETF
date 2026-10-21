@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 
-const VERSION = '1.4.2';
+const VERSION = '1.4.3';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 const LiveEngine = globalThis.SuperETFLive;
@@ -183,6 +183,8 @@ function paintMarketStatus() {
     label='LIVE 連線中';style='connecting';
   } else if(state==='reconnecting') {
     label='LIVE 重連中 · REST 備援';style='waiting';
+  } else if(state==='capacity-wait') {
+    label='LIVE 連線額度已滿 · 非 LIVE';style='waiting';
   } else if(state==='auth-error') {
     label='LIVE 金鑰遭拒 · REST 備援';style='waiting';
   } else if(state==='permission-error') {
@@ -201,6 +203,8 @@ function paintMarketStatus() {
       '串流狀態：'+state,
       '目前原因：'+(stream.reason||'無'),
       '連線嘗試：'+(stream.attempts||0),
+      '下一次受控重試：'+(stream.nextRetryAt&&stream.nextRetryAt>Date.now()?new Date(stream.nextRetryAt).toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'}):'無'),
+      '連線限制：同一 API Key 的 TF Asset、其他 App 或裝置可能占用名額。',
       '已訂閱頻道：'+(stream.subscriptions||0),
       '正在確認：'+(stream.pending||'無'),
       '最後伺服器錯誤：'+(stream.lastError||'無'),
@@ -325,6 +329,9 @@ async function marketLoop() {
 function isMarketOpen() {
   return LiveEngine.taiwanTradingWindow();
 }
+function mayStream() {
+  return isMarketOpen() && document.visibilityState!=='hidden' && (typeof navigator==='undefined'||navigator.onLine!==false);
+}
 function updateBadge() {
   const el=document.getElementById('session-badge');
   if(!el)return;
@@ -337,10 +344,20 @@ function updateBadge() {
   }
 }
 function streamInstruments(){
-  return quotes.filter(q=>!String(q.name||'').includes('（待核對）')).map(q=>{
-    try{return {symbol:fugleSymbol(q.code),type:q.type};}
-    catch(e){return null;}
-  }).filter(Boolean);
+  // Follow TF Asset: one provider socket, prioritized holdings before sample quotes.
+  const ordered=[...holdings.map(h=>quoteMap[h.code]).filter(Boolean),
+    quoteMap['^TWSE'],...quotes].filter(Boolean);
+  const used=new Set(),result=[];
+  for(const q of ordered){
+    if(String(q.name||'').includes('（待核對）'))continue;
+    try{
+      const symbol=fugleSymbol(q.code);
+      const key=(q.type==='index'?'indices':'trades')+':'+symbol;
+      if(used.has(key))continue;
+      used.add(key);result.push({symbol,type:q.type});
+    }catch(e){}
+  }
+  return result;
 }
 function onStreamQuote(update) {
   let changed=false;
@@ -367,19 +384,23 @@ function onStreamQuote(update) {
 liveClient=LiveEngine.createLiveStream({
   getCredentials:()=>apiCfg.fuguo,
   getInstruments:streamInstruments,
-  isMarketOpen,
+  isMarketOpen:mayStream,
   onStatus:()=>{paintMarketStatus();updateBadge();},
   onQuote:onStreamQuote
 });
 let lastSession=isMarketOpen();
-liveClient.start(); // Auth -> subscribe trades/aggregates/indices.
+if(mayStream())liveClient.start(); // Single WebSocket, real tick -> immediate UI repaint.
 void marketLoop(); // One initial snapshot for previous close and open.
 setInterval(()=>{
   const during=isMarketOpen();
   if(during){
-    liveClient.start();
-    const minDelay=liveClient.isLive()?180000:30000;
-    if(Date.now()-lastRestSync>=minDelay)void marketLoop();
+    if(mayStream()){
+      liveClient.start();
+      const minDelay=liveClient.isLive()?180000:30000;
+      if(Date.now()-lastRestSync>=minDelay)void marketLoop();
+    }else if(!['idle','disabled'].includes(liveClient.status().state)){
+      liveClient.stop('background');
+    }
   }else{
     if(lastSession){
       liveClient.stop();
@@ -393,15 +414,16 @@ setInterval(()=>{
   paintMarketStatus();
 },5000);
 document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible'){
-    if(isMarketOpen()){
-      if(liveClient.status().lastFrame && Date.now()-liveClient.status().lastFrame>75000)liveClient.restart();
-      else liveClient.start();
-    }
-    paintMarketStatus();
+  if(document.visibilityState==='hidden'){
+    liveClient.stop('background'); // Return the server connection slot to other Apps.
+  }else if(mayStream()){
+    liveClient.start();
+    void marketLoop();
   }
+  updateBadge();paintMarketStatus();
 });
-window.addEventListener('online',()=>{if(isMarketOpen())liveClient.restart();});
+window.addEventListener('pagehide',()=>liveClient.stop('background'));
+window.addEventListener('online',()=>{if(mayStream())liveClient.start();});
 window.addEventListener('offline',()=>{liveClient.stop('offline');paintMarketStatus();});
 
 // ---------- Tabs ----------
@@ -437,7 +459,8 @@ function renderLive() {
     const kindLabel = q.hasReal
       ? ({reference: '參考', previous: '昨收', trial: '試撮'})[q.priceKind] || ''
       : '';
-    const liveNow=q.dataSource==='live' && liveClient?.isLive();
+    const liveNow=q.dataSource==='live' && liveClient?.isLive()
+      && Date.now()-(q.updatedAt||0)<90000;
     const quoteTag=liveNow ? ' · LIVE' : q.dataSource==='live' ? ' · 最後 LIVE 價' : '';
     return `<div class="live-card">
       <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
