@@ -63,7 +63,7 @@ jobs:
           android {
               buildTypes {
                   debug {
-                      applicationIdSuffix ".preview"
+                      applicationIdSuffix ".preview.v146"
                       versionNameSuffix "-preview"
                   }
               }
@@ -72,8 +72,8 @@ jobs:
           mkdir -p android/app/src/debug/res/values
           cat > android/app/src/debug/res/values/strings.xml <<'XML'
           <resources>
-              <string name="app_name">SuperETF 預覽版</string>
-              <string name="title_activity_main">SuperETF 預覽版</string>
+              <string name="app_name">SuperETF 1.4.6 預覽版</string>
+              <string name="title_activity_main">SuperETF 1.4.6 預覽版</string>
           </resources>
           XML
 
@@ -84,7 +84,7 @@ jobs:
           ./gradlew assembleDebug --no-daemon
 
       - name: Verify preview identity and APK signature
-        run: bash scripts/verify-apk.sh android/app/build/outputs/apk/debug/app-debug.apk com.locopy.superetf.preview "${{ steps.version.outputs.code }}"
+        run: bash scripts/verify-apk.sh android/app/build/outputs/apk/debug/app-debug.apk com.locopy.superetf.preview.v146 "${{ steps.version.outputs.code }}"
 
       - name: Name preview APK by version
         run: |
