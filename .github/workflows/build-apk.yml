@@ -46,34 +46,124 @@ jobs:
       - name: Sync web assets into android
         run: npx cap sync android
 
-      - name: Set Android package version
+      - name: Set Android version and isolate preview ID
         id: version
         shell: bash
         run: |
+          set -euo pipefail
           VERSION="$(node -p "require('./package.json').version")"
           CODE="$(node -p "const v=require('./package.json').version.split('.').map(Number); v[0]*10000+v[1]*100+v[2]")"
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
           sed -i -E "s/versionCode [0-9]+/versionCode $CODE/; s/versionName \"[^\"]+\"/versionName \"$VERSION\"/" android/app/build.gradle
           grep -Fq "versionCode $CODE" android/app/build.gradle
           grep -Fq "versionName \"$VERSION\"" android/app/build.gradle
+          # Independent preview package: does NOT overwrite original app or its data.
+          cat >> android/app/build.gradle <<'GRADLE'
+          android {
+              buildTypes {
+                  debug {
+                      applicationIdSuffix ".preview"
+                      versionNameSuffix "-preview"
+                  }
+              }
+          }
+          GRADLE
+          mkdir -p android/app/src/debug/res/values
+          cat > android/app/src/debug/res/values/strings.xml <<'XML'
+          <resources>
+              <string name="app_name">SuperETF 預覽版</string>
+              <string name="title_activity_main">SuperETF 預覽版</string>
+          </resources>
+          XML
 
-      - name: Build debug APK
+      - name: Build side-by-side preview APK
         working-directory: android
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Rename APK using app version
-        shell: bash
-        run: |
-          VERSION="${{ steps.version.outputs.value }}"
-          mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/SuperETF-v${VERSION}-debug.apk"
-          test -s "dist/SuperETF-v${VERSION}-debug.apk"
+      - name: Verify preview identity and APK signature
+        run: bash scripts/verify-apk.sh android/app/build/outputs/apk/debug/app-debug.apk com.locopy.superetf.preview "${{ steps.version.outputs.code }}"
 
-      - name: Upload APK artifact
+      - name: Name preview APK by version
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk "dist/SuperETF-v${{ steps.version.outputs.value }}-preview.apk"
+          test -s "dist/SuperETF-v${{ steps.version.outputs.value }}-preview.apk"
+
+      - name: Upload side-by-side preview APK
         uses: actions/upload-artifact@v4
         with:
-          name: SuperETF-v${{ steps.version.outputs.value }}-debug
-          path: dist/SuperETF-v${{ steps.version.outputs.value }}-debug.apk
+          name: SuperETF-v${{ steps.version.outputs.value }}-preview
+          path: dist/SuperETF-v${{ steps.version.outputs.value }}-preview.apk
+          if-no-files-found: error
+
+      - name: Check protected signing secrets
+        id: signing
+        shell: bash
+        env:
+          SIGNING_B64: ${{ secrets.SUPERETF_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.SUPERETF_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.SUPERETF_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.SUPERETF_KEY_PASSWORD }}
+        run: |
+          if [[ -n "$SIGNING_B64" && -n "$STORE_PASS" && -n "$KEY_ALIAS" && -n "$KEY_PASS" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Release signing secrets missing. Official com.locopy.superetf APK is NOT generated; preview preserves old app."
+          fi
+
+      - name: Build release with permanent private signing identity
+        if: steps.signing.outputs.configured == 'true'
+        shell: bash
+        env:
+          STORE_KEY_B64: ${{ secrets.SUPERETF_KEYSTORE_BASE64 }}
+          SUPERETF_STORE_PASSWORD: ${{ secrets.SUPERETF_STORE_PASSWORD }}
+          SUPERETF_KEY_ALIAS: ${{ secrets.SUPERETF_KEY_ALIAS }}
+          SUPERETF_KEY_PASSWORD: ${{ secrets.SUPERETF_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/superetf"
+          export SUPERETF_SIGNING_FILE="$RUNNER_TEMP/superetf/release.p12"
+          printf '%s' "$STORE_KEY_B64" | base64 --decode > "$SUPERETF_SIGNING_FILE"
+          chmod 600 "$SUPERETF_SIGNING_FILE"
+          ACTUAL="$(keytool -list -v -keystore "$SUPERETF_SIGNING_FILE" -storepass "$SUPERETF_STORE_PASSWORD" -alias "$SUPERETF_KEY_ALIAS" |
+            sed -n 's/^[[:space:]]*SHA256: //p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          EXPECTED="E5A3E1C27E39E0E72A55E191882D0F54759A55165737CDA51A6125CC508AFF9F"
+          if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+            echo "::error::Signing certificate changed. Abort before generating a non-upgradeable release."
+            exit 1
+          fi
+          cat >> android/app/build.gradle <<'GRADLE'
+          android {
+              signingConfigs {
+                  superetfRelease {
+                      storeFile file(System.getenv("SUPERETF_SIGNING_FILE"))
+                      storePassword System.getenv("SUPERETF_STORE_PASSWORD")
+                      keyAlias System.getenv("SUPERETF_KEY_ALIAS")
+                      keyPassword System.getenv("SUPERETF_KEY_PASSWORD")
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.superetfRelease
+                  }
+              }
+          }
+          GRADLE
+          (cd android && ./gradlew assembleRelease --no-daemon)
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          bash scripts/verify-apk.sh "$APK" com.locopy.superetf "${{ steps.version.outputs.code }}" "$EXPECTED"
+          cp "$APK" "dist/SuperETF-v${{ steps.version.outputs.value }}-signed.apk"
+          test -s "dist/SuperETF-v${{ steps.version.outputs.value }}-signed.apk"
+          rm -f "$SUPERETF_SIGNING_FILE"
+
+      - name: Upload stable signed release APK
+        if: steps.signing.outputs.configured == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SuperETF-v${{ steps.version.outputs.value }}-signed
+          path: dist/SuperETF-v${{ steps.version.outputs.value }}-signed.apk
           if-no-files-found: error
