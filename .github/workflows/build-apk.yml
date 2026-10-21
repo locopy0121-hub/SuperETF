@@ -34,7 +34,7 @@ jobs:
       - name: Stage web assets into www/
         run: |
           rm -rf www && mkdir -p www
-          cp index.html app.js fugle-api.js styles.css www/
+          cp index.html app.js fugle-api.js security-lookup.js styles.css www/
           [ -d "assets" ] && cp -r assets www/ || true
 
       - name: Generate Capacitor android platform if missing
