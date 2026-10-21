@@ -34,3 +34,11 @@ test('LIVE core is wired to settings, ticks and UI state',()=>{
  assert.ok(workflow.includes('live-stream.js'));
  assert.ok(html.includes('v'+require('../package.json').version));
 });
+
+const stream = require('../live-stream.js');
+test('LIVE connectivity diagnostics distinguish subscription, auth and LIVE data',()=>{
+ assert.ok(html.includes('id="live-connection-detail"'));
+ assert.ok(app.includes("state==='permission-error'"));
+ assert.ok(app.includes('LIVE 訂閱成功'));
+ assert.equal(stream.ENDPOINT,'wss://api.fugle.tw/marketdata/v1.0/stock/streaming');
+});
