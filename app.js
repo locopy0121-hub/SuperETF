@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 const LiveEngine = globalThis.SuperETFLive;
@@ -44,7 +44,6 @@ const SEED_QUOTES = [
   { code: '^TWSE',  name: '加權指數',     type: 'index', base: 23500, drift: 0.001,  yahoo: '^TWII'   },
   { code: '0050',   name: '元大50',       type: 'etf',   base: 18.35, drift: 0.0005, yahoo: '0050.TW'  },
   { code: '0056',   name: '元大高股息',       type: 'etf',   base: 31.50, drift: 0.0004, yahoo: '0056.TW'  },
-  { code: '00859',  name: '00859（待核對）',   type: 'etf',   base: 15.80, drift: 0.0006, yahoo: '00859.TW' },
   { code: '2884',   name: '玉山金',         type: 'stock', base: 42.50, drift: 0.0008, yahoo: '2884.TW'  },
   { code: '2330',   name: '台積電',       type: 'stock', base: 1010,  drift: 0.0004, yahoo: '2330.TW'  },
   { code: '6605',   name: '帝寶',       type: 'stock', base: 485,   drift: 0.0009, yahoo: '6605.TW'  },
@@ -196,6 +195,21 @@ function paintMarketStatus() {
   if(badge){badge.textContent=label;badge.className='source-badge '+style;}
   const detail=document.getElementById('live-connection-detail');
   if(detail)detail.textContent=stream.reason||'';
+  const diagnostics=document.getElementById('live-diagnostics');
+  if(diagnostics){
+    const rows=[
+      '串流狀態：'+state,
+      '目前原因：'+(stream.reason||'無'),
+      '連線嘗試：'+(stream.attempts||0),
+      '已訂閱頻道：'+(stream.subscriptions||0),
+      '正在確認：'+(stream.pending||'無'),
+      '最後伺服器錯誤：'+(stream.lastError||'無'),
+      '最後 WSS 關閉碼：'+(stream.lastCloseCode??'無'),
+      '隔離失敗：'+((stream.failed||[]).map(x=>x.symbol+'（'+x.reason+'）').join('、')||'無'),
+      'REST 最近快照：'+(MarketData.lastUpdated?new Date(MarketData.lastUpdated).toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'}):'無')
+    ];
+    diagnostics.textContent=rows.join('\n');
+  }
   if(time){
     const tick=state==='live'&&stream.lastTick?stream.lastTick:null;
     const last=tick||MarketData.lastUpdated;
@@ -323,7 +337,7 @@ function updateBadge() {
   }
 }
 function streamInstruments(){
-  return quotes.map(q=>{
+  return quotes.filter(q=>!String(q.name||'').includes('（待核對）')).map(q=>{
     try{return {symbol:fugleSymbol(q.code),type:q.type};}
     catch(e){return null;}
   }).filter(Boolean);
@@ -757,6 +771,12 @@ document.getElementById('cfg-test').addEventListener('click', async () => {
   } catch (e) {
     setFeedback('❌ 網路或 CORS 問題：' + e.message, false);
   }
+});
+
+document.getElementById('cfg-live-retry')?.addEventListener('click',()=>{
+  liveClient.restart();
+  paintMarketStatus();
+  updateBadge();
 });
 
 // ---------- Tick loop（離線模擬時啟用；有真實資料時跳過 random-walk） ----------
