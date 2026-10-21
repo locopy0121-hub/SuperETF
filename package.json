@@ -1,6 +1,6 @@
 {
   "name": "superetf",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "private": true,
   "description": "SuperETF Taiwan ETF asset tracker",
   "scripts": {
