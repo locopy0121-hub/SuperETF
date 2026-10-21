@@ -5,8 +5,8 @@
   "description": "SuperETF Taiwan ETF asset tracker",
   "scripts": {
     "build": "npm test",
-    "test": "node --test tests/*.test.cjs && node --check app.js && node --check fugle-api.js && node --check live-stream.js",
-    "typecheck": "node --check app.js && node --check fugle-api.js && node --check live-stream.js",
+    "test": "node --test tests/*.test.cjs && node --check app.js && node --check fugle-api.js && node --check live-stream.js && node --check twse-close.js && node --check security-details.js",
+    "typecheck": "node --check app.js && node --check fugle-api.js && node --check live-stream.js && node --check twse-close.js && node --check security-details.js",
     "cap:sync": "cap sync android"
   },
   "dependencies": {
