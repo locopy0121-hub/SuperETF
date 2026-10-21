@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 const LiveEngine = globalThis.SuperETFLive;
@@ -174,7 +174,8 @@ function paintQuotePanels() {
 function paintMarketStatus() {
   const badge=document.getElementById('data-source-badge');
   const time=document.getElementById('last-updated');
-  const state=liveClient?.status()?.state||'disabled';
+  const stream=liveClient?.status()||{state:'disabled',reason:''};
+  const state=stream.state;
   let label=SOURCE_LABELS[MarketData.source] || MarketData.source;
   let style=MarketData.source;
   if(state==='live') {
@@ -184,14 +185,22 @@ function paintMarketStatus() {
   } else if(state==='reconnecting') {
     label='LIVE 重連中 · REST 備援';style='waiting';
   } else if(state==='auth-error') {
-    label='LIVE 驗證失敗 · REST 備援';style='waiting';
+    label='LIVE 金鑰遭拒 · REST 備援';style='waiting';
+  } else if(state==='permission-error') {
+    label='LIVE 串流權限不足 · REST 備援';style='waiting';
+  } else if(state==='subscribed') {
+    label='LIVE 訂閱成功 · 等待成交';style='connecting';
   } else if(isMarketOpen()&&apiCfg.fuguo.enabled&&apiCfg.fuguo.apiKey) {
     label='富果 REST 備援（非 LIVE）';style='waiting';
   }
   if(badge){badge.textContent=label;badge.className='source-badge '+style;}
+  const detail=document.getElementById('live-connection-detail');
+  if(detail)detail.textContent=stream.reason||'';
   if(time){
-    const last=MarketData.lastUpdated;
-    time.textContent=last?'最新資料 '+new Date(last).toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'}):'等待行情';
+    const tick=state==='live'&&stream.lastTick?stream.lastTick:null;
+    const last=tick||MarketData.lastUpdated;
+    const mode=tick?'LIVE 最新成交':'REST 最新快照';
+    time.textContent=last?mode+' '+new Date(last).toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'}):'等待行情';
   }
 }
 const MarketData = {
