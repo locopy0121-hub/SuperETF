@@ -1,7 +1,7 @@
 {
   "appId": "com.locopy.superetf",
   "appName": "SuperETF",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "webDir": "www",
   "backgroundColor": "#0d0f17",
   "android": {
