@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub" id="version-sub">台股資產管理 v1.4.3</span>
+        <span class="sub" id="version-sub">台股資產管理 v1.4.4</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -35,6 +35,7 @@
         <div class="live-source-bar">
           <span class="source-badge" id="data-source-badge">模擬數據</span>
           <span class="last-updated" id="last-updated">尚未更新</span><span class="live-connection-detail" id="live-connection-detail" aria-live="polite"></span>
+          <span class="last-updated" id="official-close-status" aria-live="polite"></span>
         </div>
         <div class="filter-chips">
           <button class="chip active" data-type="all">全部</button>
@@ -45,6 +46,11 @@
       </div>
       <div class="live-grid" id="live-grid"></div>
     </section>
+
+    <dialog id="security-detail-dialog" class="security-detail-dialog" aria-label="證券完整資料">
+      <div class="security-detail-bar"><strong>證券完整資料</strong><button type="button" id="security-detail-close" class="btn-ghost" aria-label="關閉證券明細">關閉 ✕</button></div>
+      <div class="security-detail-scroll" id="security-detail-content"></div>
+    </dialog>
 
     <section id="tab-pnl" class="tab-panel">
       <div class="section-head"><h2>損益行情牆</h2></div>
@@ -188,9 +194,9 @@
       <div class="settings-block">
         <div class="settings-block-head"><h3>關於</h3></div>
         <div class="settings-about">
-          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.3</span></div>
+          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.4</span></div>
           <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
-          <div class="about-row"><span class="about-label">本版更新</span><span>富果 LIVE 連線數控管、前背景釋放、額度冷卻與持股優先訂閱</span></div>
+          <div class="about-row"><span class="about-label">本版更新</span><span>收盤依 TWSE 官方交易日期核對；點擊行情卡片查看完整個股與 ETF 資料</span></div>
         </div>
       </div>
     </section>
@@ -198,12 +204,14 @@
   </main>
 
   <footer class="footer">
-    <span id="version-footer">SuperETF v1.4.3 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
+    <span id="version-footer">SuperETF v1.4.4 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
 <script src="fugle-api.js"></script>
 <script src="security-lookup.js"></script>
 <script src="live-stream.js"></script>
+<script src="twse-close.js"></script>
 <script src="app.js"></script>
+<script src="security-details.js"></script>
 </body>
 </html>
