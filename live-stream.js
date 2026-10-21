@@ -130,7 +130,7 @@ function createLiveStream(cfg){
     if(!desired||!marketOpen()){stop('outside-hours');return;}
     // Official heartbeat is every 30 seconds. Allow >2 missed heartbeats.
     if(lastFrame&&clock()-lastFrame>75000)backoff('串流心跳逾時');
-    else if(isLive()&&clock()-lastTick>=90000)setStatus('subscribed','連線正常，等待新成交');
+    else if(state==='live'&&lastTick&&clock()-lastTick>=90000)setStatus('subscribed','連線正常，等待新成交');
    },10000);
   };
   ws.onmessage=msg=>{
