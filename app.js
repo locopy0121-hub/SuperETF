@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 
-const VERSION = '1.4.5';
+const VERSION = '1.4.6';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 const LiveEngine = globalThis.SuperETFLive;
@@ -133,7 +133,8 @@ function ensureHoldingQuote(h) {
   const code = String(h.code || '').trim().toUpperCase();
   if (!code || quoteMap[code]) return;
   try { FugleAPI.normalizeSymbol(code); } catch { return; }
-  const q = new Quote({code, name:String(h.name || code), type:'stock', base:0, drift:0, yahoo:code+'.TW'});
+  const type=/^00[0-9]{2,4}[A-Z]?$/.test(code)||/ETF/i.test(String(h.name||''))?'etf':'stock';
+  const q = new Quote({code, name:String(h.name || code), type, base:0, drift:0, yahoo:code+'.TW'});
   quotes.push(q); quoteMap[code] = q;
 }
 holdings.forEach(ensureHoldingQuote);
@@ -146,7 +147,13 @@ function esc(s) {
   return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function pctFmt(p) { return (p >= 0 ? '+' : '') + (p * 100).toFixed(2) + '%'; }
-function cls(p) { return p > 0.0005 ? 'up' : p < -0.0005 ? 'down' : 'flat'; }
+// Taiwan stock convention: red = rising, green = falling, yellow = unchanged.
+const PNL_COLORS=Object.freeze({up:'#ef4444',down:'#22c55e',flat:'#facc15'});
+function cls(p) {
+  if(p==null||!Number.isFinite(Number(p)))return 'unknown';
+  return p>1e-9?'up':p< -1e-9?'down':'flat';
+}
+function pnlStroke(change) { return PNL_COLORS[cls(change)]||'#8b92a8'; }
 
 // ============================================================
 // MarketData service — 富果API 主 / Yahoo 備 / 離線模擬兜底
@@ -240,7 +247,7 @@ const MarketData = {
   },
 
   // REST v1.0：合法路由與金鑰標頭，逐檔隔離 404。
-  async fetchFuguo() {
+  async fetchFuguo(targets=quotes) {
     const f = apiCfg.fuguo;
     if (!f.enabled || !f.apiKey) return 0;
     this.lastFugleError = '';
@@ -250,7 +257,7 @@ const MarketData = {
     try { base = FugleAPI.normalizeRestBase(f.baseUrl); }
     catch (e) { this.lastFugleError = e.message; return 0; }
 
-    const responses = await Promise.all(quotes.map(async q => {
+    const responses = await Promise.all(targets.map(async q => {
       const startedAt=Date.now();
       const symbol = fugleSymbol(q.code);
       try {
@@ -321,7 +328,7 @@ const MarketData = {
 let officialStatus='';
 let officialLastCheck=0, officialPending=null;
 async function refreshOfficialClose(force=false){
-  if(isMarketOpen()||TWSE.taipeiParts().minutes<13*60+45)return;
+  if(isMarketOpen())return; // Night/early morning uses last completed TWSE session.
   if(officialPending)return officialPending;
   if(!force&&Date.now()-officialLastCheck<300000)return;
   officialLastCheck=Date.now();
@@ -518,8 +525,8 @@ function renderLive() {
     return `<button type="button" class="live-card" data-code="${esc(q.code)}" aria-label="查看 ${esc(q.name)} 完整資料">
       <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
       <div class="name">${esc(q.name)}</div>
-      <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
-      <div class="chg ${cls(p)}">${q.hasReal ? q.dataSource==='twse'&&q.officialRow?.change==null?'漲跌無比價':pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource)+quoteTag : "未取得"}</span></div>
+      <div class="price ${cls(q.hasReal?p:null)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
+      <div class="chg ${cls(q.hasReal?p:null)}">${q.hasReal ? q.dataSource==='twse'&&q.officialRow?.change==null?'漲跌無比價':pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource)+quoteTag : "未取得"}</span></div>
     </button>`;
   }).join('');
 }
@@ -552,7 +559,7 @@ function renderPnl() {
     if(data.length<2)return;
     const ctx=cv.getContext('2d');if(!ctx)return;
     const w=cv.width,height=cv.height,min=Math.min(...data),max=Math.max(...data),range=max-min||1;
-    ctx.strokeStyle=q.pctChg>=0?'#22c55e':'#ef4444';ctx.lineWidth=1.5;ctx.beginPath();
+    ctx.strokeStyle=pnlStroke(q.previousClose>0?q.price-q.previousClose:q.price-q.open);ctx.lineWidth=1.5;ctx.beginPath();
     data.forEach((v,i)=>{const x=i/(data.length-1)*w,y=height-2-((v-min)/range)*(height-4);
       i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
     ctx.stroke();
@@ -577,6 +584,41 @@ const dividendNameLookup=SecurityLookup.bindCodeName({
   options:symbolNameOptions
 });
 
+
+// Update saved holding immediately, even outside Taiwan trading hours.
+// TWSE EOD is authoritative when the latest session is confirmed; never synthesize prices.
+const newHoldingRequests=new Map();
+function refreshAllHoldingViews(){
+  renderLive();renderPnl();renderPortfolio();renderDividends();
+  if(document.getElementById('tab-analysis')?.classList.contains('active'))drawAnalysis();
+  paintMarketStatus();
+}
+async function refreshNewHoldingQuote(code){
+  if(newHoldingRequests.has(code))return newHoldingRequests.get(code);
+  const q=quoteMap[code],status=document.getElementById('holding-sync-status');
+  if(!q)return;
+  if(status)status.textContent=code+' 已儲存，正在更新行情與損益…';
+  const promise=(async()=>{
+    try{
+      if(!isMarketOpen())await refreshOfficialClose(true);
+      if(!q.hasReal&&apiCfg.fuguo.enabled&&apiCfg.fuguo.apiKey)await MarketData.fetchFuguo([q]);
+      if(!q.hasReal)await MarketData.fetchYahoo([q]);
+      if(isMarketOpen()&&mayStream())liveClient.refreshSubscriptions();
+      if(q.hasReal){
+        if(['mock','fuguo_waiting'].includes(MarketData.source))MarketData.setSource(q.dataSource);
+        if(status)status.textContent=code+' 行情已更新（'+q.dataSource+'）';
+      }else if(status)status.textContent=code+' 已儲存；目前尚無有效報價，等待行情來源更新';
+    }catch(error){
+      if(status)status.textContent=code+' 已儲存；行情暫時無法取得';
+    }finally{
+      newHoldingRequests.delete(code);
+      refreshAllHoldingViews();
+    }
+  })();
+  newHoldingRequests.set(code,promise);
+  return promise;
+}
+
 // ---------- Portfolio ----------
 document.getElementById('btn-add-holding').addEventListener('click', () => {
   document.getElementById('add-holding-form').classList.toggle('hidden');
@@ -599,17 +641,18 @@ document.getElementById('fh-save').addEventListener('click', async () => {
     if(!name)return alert('尚未取得證券名稱，請手動輸入後再保存');
   }
   const item={code,name,qty,cost};
-  holdings.push(item);ensureHoldingQuote(item);
-  liveClient.refreshSubscriptions();
-  if(isMarketOpen())void marketLoop();
+  holdings.push(item);
+  ensureHoldingQuote(item);
   txns.push({code:item.code,name:item.name,qty,price:cost,side:'buy',
     date:new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'})});
   save(LS.txns,txns);
-  save(LS.holdings, holdings);
+  save(LS.holdings,holdings);
   document.getElementById('add-holding-form').classList.add('hidden');
-  ['fh-code','fh-name','fh-qty','fh-cost'].forEach(id => document.getElementById(id).value = '');
+  ['fh-code','fh-name','fh-qty','fh-cost'].forEach(id=>document.getElementById(id).value='');
   holdingNameLookup.reset();
-  renderPortfolio(); renderPnl();
+  refreshAllHoldingViews();
+  liveClient.refreshSubscriptions();
+  void refreshNewHoldingQuote(code);
 });
 
 function renderPortfolio() {
@@ -620,14 +663,17 @@ function renderPortfolio() {
     const value=price===null?null:price*h.qty,pnl=value===null?null:value-h.cost*h.qty;
     const pct=value!==null&&total>0?value/total:null;
     return `<tr><td><strong>${esc(h.code)}</strong></td><td>${esc(h.name)}</td>
-      <td>${fmt(h.qty,0)}</td><td>${fmt(h.cost)}</td><td class="${cls(q?.pctChg||0)}">${fmt(price)}</td>
+      <td>${fmt(h.qty,0)}</td><td>${fmt(h.cost)}</td><td class="${cls(q?.hasReal?q.pctChg:null)}">${fmt(price)}</td>
       <td class="${cls(pnl)}">${pnl===null?'—':(pnl>=0?'+':'')+fmt(pnl)}</td>
       <td>${pct===null?'—':(pct*100).toFixed(1)+'%'}</td>
       <td><button class="del-btn" data-i="${i}" title="移除">×</button></td></tr>`;
   }).join('');
   body.querySelectorAll('.del-btn').forEach(b=>b.addEventListener('click',()=>{
     const i=Number(b.dataset.i);if(!Number.isInteger(i)||i<0||i>=holdings.length)return;
-    holdings.splice(i,1);save(LS.holdings,holdings);renderPortfolio();renderPnl();
+    holdings.splice(i,1);
+    save(LS.holdings,holdings);
+    refreshAllHoldingViews();
+    liveClient.refreshSubscriptions();
   }));
   renderTransactions();
 }
@@ -638,7 +684,7 @@ function renderTransactions() {
   txnEl.innerHTML = `<h3>交易紀錄（最新在前）</h3><div class="txn-list">` +
     [...txns].reverse().slice(0, 10).map(t => `
       <div class="txn-item">
-        <span class="${t.side === 'buy' ? 'up' : 'down'}">${t.side === 'buy' ? '買入' : '賣出'} ${esc(t.code)} ${Math.abs(t.qty)} 股 @ ${fmt(t.price)}</span>
+        <span class="${t.side === 'buy' ? 'txn-buy' : 'txn-sell'}">${t.side === 'buy' ? '買入' : '賣出'} ${esc(t.code)} ${Math.abs(t.qty)} 股 @ ${fmt(t.price)}</span>
         <span class="date">${t.date}</span>
       </div>`).join('') + '</div>';
 }
@@ -704,14 +750,14 @@ function drawAnalysis() {
   if(!data.length){document.getElementById('analysis-notes').textContent='尚無有效加權指數行情；不顯示模擬走勢。';return;}
   const min = Math.min(...data), max = Math.max(...data);
   const range = max - min || 1;
-  const up = data[data.length - 1] >= data[0];
+  const movement=data[data.length-1]-data[0];
 
   ctx.strokeStyle = '#2a3042'; ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
     const y = (h - 40) * i / 4 + 20;
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
   }
-  ctx.strokeStyle = up ? '#22c55e' : '#ef4444';
+  ctx.strokeStyle = pnlStroke(movement);
   ctx.lineWidth = 2;
   ctx.beginPath();
   data.forEach((v, i) => {
