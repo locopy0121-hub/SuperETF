@@ -222,7 +222,7 @@ function paintMarketStatus() {
   if(time){
     const tick=state==='live'&&stream.lastTick?stream.lastTick:null;
     const last=tick||MarketData.lastUpdated;
-    const mode=tick?'LIVE 最新成交':'REST 最新快照';
+    const mode=tick?'LIVE 最新成交':!isMarketOpen()&&MarketData.source==='twse'?'TWSE 官方收盤核對於':'REST 最新快照';
     time.textContent=last?mode+' '+new Date(last).toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'}):'等待行情';
   }
 }
@@ -519,7 +519,7 @@ function renderLive() {
       <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
       <div class="name">${esc(q.name)}</div>
       <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
-      <div class="chg ${cls(p)}">${q.hasReal ? pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource)+quoteTag : "未取得"}</span></div>
+      <div class="chg ${cls(p)}">${q.hasReal ? q.dataSource==='twse'&&q.officialRow?.change==null?'漲跌無比價':pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource)+quoteTag : "未取得"}</span></div>
     </button>`;
   }).join('');
 }
