@@ -26,7 +26,7 @@ function fakeClock(){
 function create(cfg={}){
  const clock=fakeClock(),updates=[],states=[];
  const engine=live.createLiveStream({
-  WebSocketImpl:FakeSocket,...clock,
+  WebSocketImpl:FakeSocket,...clock,now:clock.clock,
   getCredentials:()=>({enabled:true,apiKey:'secret'}),
   isMarketOpen:()=>true,
   getInstruments:()=>[{symbol:'2330',type:'stock'},{symbol:'IX0001',type:'index'}],
