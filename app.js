@@ -1,9 +1,11 @@
 (() => {
 'use strict';
 
-const VERSION = '1.3.3';
+const VERSION = '1.4.0';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
+const LiveEngine = globalThis.SuperETFLive;
+if (!LiveEngine) throw new Error('富果 LIVE 串流核心未載入');
 const SecurityLookup = globalThis.SuperETFSecurityLookup;
 if (!SecurityLookup) throw new Error('證券名稱查詢工具未載入');
 
@@ -120,6 +122,12 @@ class Quote {
 
 const quotes   = SEED_QUOTES.map(q => new Quote(q));
 const quoteMap = Object.fromEntries(quotes.map(q => [q.code, q]));
+function fugleSymbol(code) {
+  // Legacy settings sometimes mapped the price index to the TRI (IR0001).
+  // ^TWSE must always mean the TAIEX price index IX0001.
+  if (code === '^TWSE') return 'IX0001';
+  return FugleAPI.normalizeSymbol(apiCfg.fuguo.symbols?.[code] || code);
+}
 function ensureHoldingQuote(h) {
   const code = String(h.code || '').trim().toUpperCase();
   if (!code || quoteMap[code]) return;
@@ -143,12 +151,49 @@ function cls(p) { return p > 0.0005 ? 'up' : p < -0.0005 ? 'down' : 'flat'; }
 // MarketData service — 富果API 主 / Yahoo 備 / 離線模擬兜底
 // ============================================================
 const SOURCE_LABELS = {
-  fuguo: '來源：富果 API',
+  live: '● LIVE 富果',
+  fuguo: '來源：富果 REST',
   fuguo_waiting: '富果 API 已連線（尚無行情）',
   yahoo: '來源：Yahoo Finance',
   mock:  '無可用行情（不使用模擬價）',
 };
 
+let liveClient = null;
+let pendingLivePaint = false;
+function paintQuotePanels() {
+  if (pendingLivePaint) return;
+  pendingLivePaint = true;
+  requestAnimationFrame(() => {
+    pendingLivePaint = false;
+    if (document.getElementById('tab-live')?.classList.contains('active')) renderLive();
+    if (document.getElementById('tab-pnl')?.classList.contains('active')) renderPnl();
+    if (document.getElementById('tab-portfolio')?.classList.contains('active')) renderPortfolio();
+    if (document.getElementById('tab-analysis')?.classList.contains('active')) drawAnalysis();
+  });
+}
+function paintMarketStatus() {
+  const badge=document.getElementById('data-source-badge');
+  const time=document.getElementById('last-updated');
+  const state=liveClient?.status()?.state||'disabled';
+  let label=SOURCE_LABELS[MarketData.source] || MarketData.source;
+  let style=MarketData.source;
+  if(state==='live') {
+    label='● LIVE 富果 WebSocket';style='live';
+  } else if(['connecting','authenticating','subscribing'].includes(state)) {
+    label='LIVE 連線中';style='connecting';
+  } else if(state==='reconnecting') {
+    label='LIVE 重連中 · REST 備援';style='waiting';
+  } else if(state==='auth-error') {
+    label='LIVE 驗證失敗 · REST 備援';style='waiting';
+  } else if(isMarketOpen()&&apiCfg.fuguo.enabled&&apiCfg.fuguo.apiKey) {
+    label='富果 REST 備援（非 LIVE）';style='waiting';
+  }
+  if(badge){badge.textContent=label;badge.className='source-badge '+style;}
+  if(time){
+    const last=MarketData.lastUpdated;
+    time.textContent=last?'最新資料 '+new Date(last).toLocaleTimeString('zh-TW',{hour12:false,timeZone:'Asia/Taipei'}):'等待行情';
+  }
+}
 const MarketData = {
   source: 'mock',
   lastUpdated: 0,
@@ -157,16 +202,8 @@ const MarketData = {
   lastFugleNoPrice: 0,
 
   setSource(name) {
-    this.source = name;
-    const badge = document.getElementById('data-source-badge');
-    const label = document.getElementById('last-updated');
-    if (badge) {
-      badge.textContent = SOURCE_LABELS[name] || name;
-      badge.className = 'source-badge ' + name;
-    }
-    if (label && this.lastUpdated) {
-      label.textContent = '更新於 ' + new Date(this.lastUpdated).toLocaleTimeString('zh-TW', { hour12: false });
-    }
+    this.source=name;
+    paintMarketStatus();
     updateSourcePriorityBadges();
   },
 
@@ -182,7 +219,8 @@ const MarketData = {
     catch (e) { this.lastFugleError = e.message; return 0; }
 
     const responses = await Promise.all(quotes.map(async q => {
-      const symbol = f.symbols?.[q.code] || q.code;
+      const startedAt=Date.now();
+      const symbol = fugleSymbol(q.code);
       try {
         const url = FugleAPI.buildQuoteUrl(base, symbol);
         const r = await fetch(url, {
@@ -192,7 +230,7 @@ const MarketData = {
         if (!r.ok) throw new Error(FugleAPI.httpError(r.status, q.code));
         const data = await r.json();
         const value = FugleAPI.parseQuote(data);
-        return { q, data, value };
+        return { q, data, value, startedAt };
       } catch (e) {
         if (!this.lastFugleError) this.lastFugleError = e.message;
         console.warn('[SuperETF] 富果報價失敗：' + q.code + '：' + e.message);
@@ -202,7 +240,9 @@ const MarketData = {
     this.lastFugleHttp200 = responses.filter(Boolean).length;
     const valid = responses.filter(item => item && item.value);
     this.lastFugleNoPrice = this.lastFugleHttp200 - valid.length;
-    for (const {q, data, value} of valid) {
+    for (const {q, data, value, startedAt} of valid) {
+      // Never let a delayed HTTP reply roll back a newer stream update.
+      if(q.dataSource==='live' && q.updatedAt>=startedAt)continue;
       q.applyReal(value.price, value.open, {...value,source:'fuguo'});
       const record = data?.data && typeof data.data === 'object' ? data.data : data;
       if (typeof record.name === 'string' && record.name) q.name = record.name;
@@ -213,6 +253,7 @@ const MarketData = {
   // Fallback only for instruments not updated from Fugle this cycle.
   async fetchYahoo(targets=quotes) {
     const responses=await Promise.all(targets.map(async q=>{
+      const startedAt=Date.now();
       try {
         const url='https://query1.finance.yahoo.com/v8/finance/chart/'+encodeURIComponent(q.yahooSymbol)+'?interval=1d&range=5d';
         const r=await fetch(url,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(9000)});
@@ -222,49 +263,123 @@ const MarketData = {
         if(!Number.isFinite(price)||price<=0)return null;
         const open=Number(meta.regularMarketOpen??meta.chartPreviousClose)||price;
         const prev=Number(meta.chartPreviousClose??meta.previousClose);
-        return {q,price,open,prev:Number.isFinite(prev)&&prev>0?prev:null};
+        return {q,price,open,prev:Number.isFinite(prev)&&prev>0?prev:null,startedAt};
       }catch(e){console.warn('[SuperETF] Yahoo '+q.code+': '+e.message);return null;}
     }));
     const valid=responses.filter(Boolean);
-    valid.forEach(v=>v.q.applyReal(v.price,v.open,{kind:'close',previousClose:v.prev,source:'yahoo'}));
+    valid.forEach(v=>{
+      if(v.q.dataSource==='live' && v.q.updatedAt>=v.startedAt)return;
+      v.q.applyReal(v.price,v.open,{kind:'close',previousClose:v.prev,source:'yahoo'});
+    });
     return valid.length;
   },
   async sync() {
     quotes.forEach(q=>{q.updatedInCycle=false;});
     const fu=await this.fetchFuguo();
-    const yh=await this.fetchYahoo(quotes.filter(q=>!q.updatedInCycle));
+    const yh=await this.fetchYahoo(quotes.filter(q=>!q.updatedInCycle && !(liveClient?.isLive() && q.dataSource==='live')));
     if(fu||yh){this.lastUpdated=Date.now();this.setSource(fu?'fuguo':'yahoo');return this.source;}
     if(this.lastFugleHttp200){this.setSource('fuguo_waiting');return 'fuguo_waiting';}
     this.setSource('mock');return 'mock';
   },
 };
 
-let marketSyncPending = false;
+// Fugle socket delivers every trade; REST is bootstrap and degraded fallback.
+let marketSyncPending=false;
+let lastRestSync=0;
 async function marketLoop() {
-  if (marketSyncPending) return;
-  marketSyncPending = true;
-  try { await MarketData.sync(); renderLive(); }
-  finally { marketSyncPending = false; }
+  if(marketSyncPending)return;
+  marketSyncPending=true;lastRestSync=Date.now();
+  try {
+    await MarketData.sync();
+    paintQuotePanels();
+  } catch(e){
+    console.warn('[SuperETF] REST fallback error:',e.message);
+  } finally {
+    marketSyncPending=false;
+    paintMarketStatus();
+  }
 }
-marketLoop();
-setInterval(()=>{if(isMarketOpen())marketLoop();},30000);
-setInterval(()=>{if(!isMarketOpen())marketLoop();},300000);
-
-// ---------- Session badge ----------
 function isMarketOpen() {
-  const now = new Date();
-  const day = new Date(now.toLocaleString('en-US',{timeZone:'Asia/Taipei'})).getDay();
-  if (day === 0 || day === 6) return false;
-  const hm = new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(now).split(':').map(Number);
-  const t=hm[0]*60+hm[1];
-  return t>=540 && t<810; // Mon-Fri 09:00-13:30; holiday schedule is not inferred
+  return LiveEngine.taiwanTradingWindow();
 }
 function updateBadge() {
-  const el = document.getElementById('session-badge');
-  if (isMarketOpen()) { el.textContent = '一般交易時段（休市依證交所）'; el.className = 'session-badge open'; }
-  else { el.textContent = '非一般交易時段'; el.className = 'session-badge closed'; }
+  const el=document.getElementById('session-badge');
+  if(!el)return;
+  if(isMarketOpen()){
+    el.textContent=liveClient?.isLive()?'台股盤中 · LIVE':'台股一般交易時段';
+    el.className='session-badge open';
+  }else{
+    el.textContent='非一般交易時段 · 顯示最後有效行情';
+    el.className='session-badge closed';
+  }
 }
-setInterval(updateBadge, 30000); updateBadge();
+function streamInstruments(){
+  return quotes.map(q=>{
+    try{return {symbol:fugleSymbol(q.code),type:q.type};}
+    catch(e){return null;}
+  }).filter(Boolean);
+}
+function onStreamQuote(update) {
+  let changed=false;
+  for(const q of quotes){
+    let symbol;
+    try{symbol=fugleSymbol(q.code);}catch(e){continue;}
+    if(symbol!==update.symbol)continue;
+    if(update.timestamp && q.lastMarketTs && update.timestamp<q.lastMarketTs)continue;
+    const open=update.open??q.open??update.price;
+    q.applyReal(update.price,open,{
+      kind:update.kind,previousClose:update.previousClose??q.previousClose,
+      high:update.high,low:update.low,source:'live'
+    });
+    if(update.timestamp)q.lastMarketTs=update.timestamp;
+    if(update.name)q.name=update.name;
+    changed=true;
+  }
+  if(!changed)return;
+  MarketData.source='live';
+  MarketData.lastUpdated=Date.now();
+  paintMarketStatus();
+  paintQuotePanels();
+}
+liveClient=LiveEngine.createLiveStream({
+  getCredentials:()=>apiCfg.fuguo,
+  getInstruments:streamInstruments,
+  isMarketOpen,
+  onStatus:()=>{paintMarketStatus();updateBadge();},
+  onQuote:onStreamQuote
+});
+let lastSession=isMarketOpen();
+liveClient.start(); // Auth -> subscribe trades/aggregates/indices.
+void marketLoop(); // One initial snapshot for previous close and open.
+setInterval(()=>{
+  const during=isMarketOpen();
+  if(during){
+    liveClient.start();
+    const minDelay=liveClient.isLive()?180000:30000;
+    if(Date.now()-lastRestSync>=minDelay)void marketLoop();
+  }else{
+    if(lastSession){
+      liveClient.stop();
+      void marketLoop(); // Take final official close snapshot, then hold prices.
+    } else if(liveClient.status().state!=='idle'&&liveClient.status().state!=='disabled'){
+      liveClient.stop();
+    }
+  }
+  lastSession=during;
+  updateBadge();
+  paintMarketStatus();
+},5000);
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'){
+    if(isMarketOpen()){
+      if(liveClient.status().lastFrame && Date.now()-liveClient.status().lastFrame>75000)liveClient.restart();
+      else liveClient.start();
+    }
+    paintMarketStatus();
+  }
+});
+window.addEventListener('online',()=>{if(isMarketOpen())liveClient.restart();});
+window.addEventListener('offline',()=>{liveClient.stop('offline');paintMarketStatus();});
 
 // ---------- Tabs ----------
 document.querySelectorAll('.tab').forEach(btn => {
@@ -299,11 +414,13 @@ function renderLive() {
     const kindLabel = q.hasReal
       ? ({reference: '參考', previous: '昨收', trial: '試撮'})[q.priceKind] || ''
       : '';
-    return `<div class="live-card">
+    const liveNow=q.dataSource==='live' && liveClient?.isLive();
+    const quoteTag=liveNow ? ' · LIVE' : q.dataSource==='live' ? ' · 最後 LIVE 價' : '';
+    return `<div class="live-card">`;
       <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
       <div class="name">${esc(q.name)}</div>
       <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
-      <div class="chg ${cls(p)}">${q.hasReal ? pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource) : "未取得"}</span></div>
+      <div class="chg ${cls(p)}">${q.hasReal ? pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource)+quoteTag : "未取得"}</span></div>
     </div>`;
   }).join('');
 }
@@ -384,6 +501,8 @@ document.getElementById('fh-save').addEventListener('click', async () => {
   }
   const item={code,name,qty,cost};
   holdings.push(item);ensureHoldingQuote(item);
+  liveClient.refreshSubscriptions();
+  if(isMarketOpen())void marketLoop();
   txns.push({code:item.code,name:item.name,qty,price:cost,side:'buy',
     date:new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'})});
   save(LS.txns,txns);
@@ -589,6 +708,7 @@ document.getElementById('cfg-save').addEventListener('click', () => {
 
   apiCfg = { fuguo: { enabled, baseUrl, apiKey, symbols } };
   saveApiConfig(apiCfg);
+  liveClient.restart();
 
   const summary = enabled && baseUrl
     ? '已保存：富果API 已啟用，即時行情將優先使用富果來源'
@@ -596,7 +716,8 @@ document.getElementById('cfg-save').addEventListener('click', () => {
   setFeedback(summary, true);
   updateSourcePriorityBadges();
   // 立即重新同步一次
-  MarketData.sync().then(src => {
+  marketLoop().then(() => {
+    const src=MarketData.source;
     const error = enabled && src !== 'fuguo' && !MarketData.lastFugleHttp200
       ? MarketData.lastFugleError : '';
     const idle = enabled && MarketData.lastFugleNoPrice > 0 ? '；部分代號 HTTP 200 但盤前尚無價格' : '';
@@ -631,7 +752,7 @@ document.getElementById('cfg-test').addEventListener('click', async () => {
 
 // ---------- Tick loop（離線模擬時啟用；有真實資料時跳過 random-walk） ----------
 setInterval(() => {
-  // Prices are fetched, never random-walked.
+  // Prices are fetched or streamed, never random-walked.
   if (document.getElementById('tab-live').classList.contains('active')) renderLive();
   if (document.getElementById('tab-pnl').classList.contains('active')) renderPnl();
   if (document.getElementById('tab-portfolio').classList.contains('active')) renderPortfolio();
