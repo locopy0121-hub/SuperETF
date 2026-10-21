@@ -4,6 +4,7 @@
 'use strict';
 const ENDPOINT='wss://api.fugle.tw/marketdata/v1.0/stock/streaming';
 const CHANNELS=new Set(['trades','aggregates','indices']);
+const CAPACITY_COOLDOWN_MS=300000; // Official server quota; do not retry every second.
 const pos=n=>typeof n==='number'&&Number.isFinite(n)&&n>0?n:null;
 function marketTime(value){
  if(typeof value!=='number'||!Number.isFinite(value)||value<=0)return null;
@@ -53,7 +54,8 @@ function createLiveStream(cfg){
  const marketOpen=cfg.isMarketOpen||(()=>taiwanTradingWindow());
  let socket=null,authenticated=false,desired=false,state='idle',reason='',generation=0,
   reconnectTimer=null,watchdog=null,authTimer=null,subscribeTimer=null,retry=0,lastFrame=0,lastTick=0,subscriptionDenied=false,
-  pendingKey=null,attempts=0,lastError='',lastCloseCode=null;
+  pendingKey=null,attempts=0,lastError='',lastCloseCode=null,
+  capacityFailures=0,nextRetryAt=0,lastManualRetryAt=0;
  const sent=new Set(),confirmed=new Set(),failed=new Map(),lastTickBySymbol=new Map();
  function sanitize(value){
   let out=String(value??'').slice(0,220);
@@ -62,7 +64,7 @@ function createLiveStream(cfg){
   return out.replace(/(api.?key|token|secret|authorization)\s*[:=]\s*[^,\s;]+/gi,'$1=[REDACTED]').slice(0,140);
  }
  function diagnostics(){return {state,reason,lastFrame,lastTick,subscriptions:confirmed.size,
-  authenticated,attempts,lastError,lastCloseCode,pending:pendingKey,
+  authenticated,attempts,lastError,lastCloseCode,pending:pendingKey,nextRetryAt,capacityFailures,
   failed:[...failed].map(([symbol,why])=>({symbol,reason:why})).slice(-12)};}
  const OPEN=1,CONNECTING=0;
  function isOpen(){return socket?.readyState===OPEN;}
@@ -132,6 +134,17 @@ function createLiveStream(cfg){
    try{old.close();}catch(error){}
   }
  }
+ function capacityWait(){
+  if(!desired||!enabled()||!marketOpen()){stop('outside-hours');return;}
+  clearTimers();cleanupSocket();
+  const delay=Math.min(900000,CAPACITY_COOLDOWN_MS*(2**Math.min(capacityFailures++,2)));
+  nextRetryAt=clock()+delay;
+  setStatus('capacity-wait','富果 LIVE 連線數已滿；請關閉其他使用同一 API Key 的 App／裝置，釋放名額後再重試');
+  reconnectTimer=setT(()=>{
+   reconnectTimer=null;
+   if(desired&&enabled()&&marketOpen())connect();
+  },delay);
+ }
  function backoff(reason){
   if(!desired||!enabled()||!marketOpen()){stop('outside-hours');return;}
   cleanupSocket();clearTimers();
@@ -168,7 +181,7 @@ function createLiveStream(cfg){
    let packet;
    try{packet=JSON.parse(msg.data);}catch(e){return;}
    if(packet?.event==='authenticated'){
-    authenticated=true;retry=0;
+    authenticated=true;retry=0;capacityFailures=0;nextRetryAt=0;
     if(authTimer!==null){clearT(authTimer);authTimer=null;}
     setStatus('subscribing','驗證成功，逐檔確認訂閱');
     refreshSubscriptions();
@@ -203,9 +216,12 @@ function createLiveStream(cfg){
     const message=raw.toLowerCase();
     const code=sanitize(packet.data?.code??packet.data?.status??'');
     lastError=(code?'['+code+'] ':'')+sanitize(raw);
+    const capacity=/maximum number of connections reached|maximum connections|too many connections|connection (?:quota|limit) (?:reached|exceeded)|concurrent connection limit/i.test(message);
     const invalid=!authenticated&&(/invalid authentication credentials|invalid api.?key|authentication failed|expired api.?key/.test(message)
       ||(code==='401'&&/auth|key|credential/.test(message)));
-    if(invalid){
+    if(capacity){
+      capacityWait();
+    }else if(invalid){
       desired=false;cleanupSocket();clearTimers();
       setStatus('auth-error','富果拒絕 LIVE 金鑰（REST 成功不代表串流授權）');
     }else if(authenticated&&pendingKey){
@@ -227,6 +243,9 @@ function createLiveStream(cfg){
   ws.onclose=event=>{
    if(g!==generation||ws!==socket)return;
    lastCloseCode=Number(event?.code)||1006;
+   if(/maximum number of connections|too many connections|connection (?:limit|quota)/i.test(String(event?.reason||''))){
+     lastError=sanitize(event.reason);capacityWait();return;
+   }
    backoff('WebSocket 關閉碼 '+lastCloseCode+(event?.wasClean?'（正常）':'（異常）'));
   };
  }
@@ -235,16 +254,33 @@ function createLiveStream(cfg){
   if(!marketOpen()){stop('outside-hours');return;}
   if(!enabled()){stop('disabled');return;}
   if(socket||reconnectTimer!==null||['auth-error','permission-error','subscription-error'].includes(state))return;
-  connect();
+  if(nextRetryAt>clock()){
+    const wait=Math.max(1,nextRetryAt-clock());
+    setStatus('capacity-wait','富果 LIVE 連線名額尚未釋放；等待冷卻後再嘗試');
+    reconnectTimer=setT(()=>{reconnectTimer=null;if(desired&&enabled()&&marketOpen())connect();},wait);
+    return;
+  }
+  nextRetryAt=0;connect();
  }
  function stop(reason='outside-hours'){
   generation++;desired=false;cleanupSocket();clearTimers();retry=0;
   setStatus(reason==='disabled'?'disabled':'idle',reason);
  }
  function restart(){
-  generation++;cleanupSocket();clearTimers();retry=0;attempts=0;lastError='';lastCloseCode=null;failed.clear();desired=false;
+  if(state==='capacity-wait'&&lastManualRetryAt&&clock()-lastManualRetryAt<30000){
+    setStatus('capacity-wait','請先釋放其他 App 的串流連線；30 秒內避免重複測試');
+    return;
+  }
+  if(state==='capacity-wait')lastManualRetryAt=clock();
+  const hadSocket=!!socket;
+  generation++;cleanupSocket();clearTimers();
+  retry=0;attempts=0;lastError='';lastCloseCode=null;failed.clear();desired=false;
+  nextRetryAt=0;capacityFailures=0;
   setStatus('idle');
-  start();
+  if(hadSocket&&enabled()&&marketOpen()){
+    desired=true;setStatus('reconnecting','已釋放舊連線，等待伺服器回收後重建');
+    reconnectTimer=setT(()=>{reconnectTimer=null;if(desired&&enabled()&&marketOpen())connect();},2500);
+  }else start();
  }
  return {start,stop,restart,refreshSubscriptions,isLive,
   status:diagnostics,
