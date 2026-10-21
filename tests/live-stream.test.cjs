@@ -61,12 +61,15 @@ test('WebSocket authenticates before subscribing and LIVE only after confirmed s
  assert.deepEqual(ws.sent[0],{event:'auth',data:{apikey:'secret'}});
  assert.equal(ws.sent.filter(v=>v.event==='subscribe').length,0);
  ws.emit({event:'authenticated',data:{}});
- assert.deepEqual(ws.sent.filter(v=>v.event==='subscribe').map(v=>v.data.channel).sort(),['aggregates','indices','trades']);
+ assert.deepEqual(ws.sent.filter(v=>v.event==='subscribe').map(v=>v.data.channel).sort(),['indices','trades']);
  assert.equal(engine.isLive(),false);
- ws.emit({event:'subscribed',data:[{symbol:'2330',channel:'trades',id:'t'},{symbol:'2330',channel:'aggregates',id:'a'}]});
- assert.equal(engine.isLive(),true);
+ ws.emit({event:'subscribed',data:{symbol:'2330',channel:'trades',id:'t'}});
+ assert.equal(engine.status().state,'subscribed');
+ assert.equal(engine.isLive(),false);
  ws.emit({event:'data',channel:'trades',data:{symbol:'2330',price:940,time:1685338200000000}});
  assert.equal(updates[0].price,940);
+ assert.equal(engine.isLive(),true);
+ ws.emit({event:'subscribed',data:{symbol:'IX0001',channel:'indices',id:'i'}});
  ws.emit({event:'data',channel:'indices',data:{symbol:'IX0001',index:46500,time:1685338200000000}});
  assert.equal(updates[1].price,46500);
  ws.emit({event:'data',channel:'trades',data:{symbol:'2330',price:930,time:1685338100000000}});
@@ -79,12 +82,12 @@ test('New holding auto-subscribes on current authenticated WebSocket',()=>{
  let instruments=[{symbol:'0050',type:'etf'}];
  const {engine}=create({getInstruments:()=>instruments});
  engine.start();const ws=FakeSocket.instances[0];ws.open();ws.emit({event:'authenticated'});
- assert.equal(ws.sent.filter(x=>x.event==='subscribe').length,2);
+ assert.equal(ws.sent.filter(x=>x.event==='subscribe').length,1);
  instruments.push({symbol:'00406A',type:'etf'});
  engine.refreshSubscriptions();
- assert.equal(ws.sent.filter(x=>x.event==='subscribe').length,4);
+ assert.equal(ws.sent.filter(x=>x.event==='subscribe').length,2);
  engine.refreshSubscriptions();
- assert.equal(ws.sent.filter(x=>x.event==='subscribe').length,4);
+ assert.equal(ws.sent.filter(x=>x.event==='subscribe').length,2);
  engine.stop();
 });
 test('Socket disconnect uses exponential reconnect and does not label REST as LIVE',()=>{
@@ -93,6 +96,7 @@ test('Socket disconnect uses exponential reconnect and does not label REST as LI
  engine.start();const first=FakeSocket.instances[0];first.open();
  first.emit({event:'authenticated'});
  first.emit({event:'subscribed',data:{symbol:'2330',channel:'trades',id:'q'}});
+ first.emit({event:'data',channel:'trades',data:{symbol:'2330',price:920,time:1685338200000000}});
  assert.equal(engine.isLive(),true);
  first.close();
  assert.equal(engine.isLive(),false);
@@ -123,4 +127,80 @@ test('Missed heartbeat forces reconnect, stop clears all timers',()=>{
  clock.advance(76000);timers[0].fn();
  assert.equal(engine.status().state,'reconnecting');
  engine.stop();assert.equal(clock.timers.size,0);assert.equal(clock.intervals.size,0);
+});
+
+test('Generic pre-auth server error retries, not misclassified as invalid key',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'error',data:{message:'Internal server error'}});
+ assert.equal(engine.status().state,'reconnecting');
+ assert.match(engine.status().reason,/WebSocket/);
+ assert.notEqual(engine.status().state,'auth-error');
+ assert.equal([...clock.timers.values()][0].ms,1500);
+ clock.triggerTimeouts();
+ assert.equal(FakeSocket.instances.length,2);
+ engine.stop();
+});
+test('WebSocket onerror before authentication automatically retries',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.onerror?.();
+ assert.equal(engine.status().state,'reconnecting');
+ clock.triggerTimeouts();
+ assert.equal(FakeSocket.instances.length,2);
+ engine.stop();
+});
+test('Explicit invalid credentials is terminal until user changes settings',()=>{
+ FakeSocket.instances=[];
+ const {engine}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'error',data:{message:'Invalid authentication credentials'}});
+ assert.equal(engine.status().state,'auth-error');
+ assert.doesNotMatch(engine.status().reason,/secret/);
+ engine.start();assert.equal(FakeSocket.instances.length,1);
+ engine.restart();assert.equal(FakeSocket.instances.length,2);
+ engine.stop();
+});
+test('Single rejected channel does not kill an approved LIVE stream',()=>{
+ FakeSocket.instances=[];
+ const {engine,updates}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'authenticated'});
+ ws.emit({event:'subscribed',data:{symbol:'2330',channel:'trades',id:'t'}});
+ ws.emit({event:'error',data:{message:'Not authorized for indices channel'}});
+ assert.equal(engine.status().state,'subscribed');
+ ws.emit({event:'data',channel:'trades',data:{symbol:'2330',price:910,time:1685338200000000}});
+ assert.equal(engine.isLive(),true);
+ assert.equal(updates[0].price,910);
+ engine.stop();
+});
+test('All rejected channels are distinct permission-error after ACK timeout',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'authenticated'});
+ ws.emit({event:'error',data:{message:'Subscription permission denied'}});
+ assert.equal(engine.status().state,'subscribing');
+ clock.advance(12000);clock.triggerTimeouts();
+ assert.equal(engine.status().state,'permission-error');
+ assert.equal(engine.isLive(),false);
+ engine.stop();
+});
+test('Subscribed is NOT LIVE until actual tick; stale tick returns to waiting',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'authenticated'});
+ ws.emit({event:'subscribed',data:{symbol:'2330',channel:'trades',id:'t'}});
+ assert.equal(engine.isLive(),false);
+ ws.emit({event:'data',channel:'trades',data:{symbol:'2330',price:915,time:1685338200000000}});
+ assert.equal(engine.isLive(),true);
+ clock.advance(90000);
+ assert.equal(engine.isLive(),false);
+ ws.emit({event:'heartbeat',data:{}});
+ const watchdog=[...clock.intervals.values()][0];
+ watchdog.fn();
+ assert.equal(engine.status().state,'subscribed');
+ engine.stop();
 });
