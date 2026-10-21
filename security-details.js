@@ -57,7 +57,7 @@ function render(code){
   q.dataSource==='yahoo'?'Yahoo 備援；非官方資料':'尚無有效報價';
  body.append(elt('div','security-source',source));
  const price=elt('div','security-price',fmt(q.price));
- price.classList.add(q.pctChg>0?'up':q.pctChg<0?'down':'flat');body.append(price);
+ price.classList.add(!q.hasReal?'unknown':q.pctChg>0?'up':q.pctChg<0?'down':'flat');body.append(price);
  body.append(elt('p','security-source','官方交易日期：'+(q.officialDate||'尚未確認')+
   (marketOpen?' · 盤中行情非最終收盤':' · 資料需與官方交易日期相符')));
  const quote=section('行情與收盤數據');
