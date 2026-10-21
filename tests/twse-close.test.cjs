@@ -35,7 +35,8 @@ test('On trading Wednesday stale Tuesday TWSE cannot overwrite todays REST price
  assert.equal(twse.eligibleDate('2026-10-21',now,[]),true);
  assert.equal(twse.eligibleDate('2026-10-22',now,[]),false);
  assert.equal(twse.eligibleDate('2026-10-21',new Date('2026-10-21T04:01:00Z'),[]),false);
- assert.equal(twse.eligibleDate('2026-10-20',new Date('2026-10-24T04:01:00Z'),[]),true);
+ assert.equal(twse.eligibleDate('2026-10-20',new Date('2026-10-24T04:01:00Z'),[]),false);
+ assert.equal(twse.eligibleDate('2026-10-23',new Date('2026-10-24T04:01:00Z'),[]),true);
  assert.equal(twse.eligibleDate('2026-10-20',now,['2026-10-21']),true);
 });
 
@@ -66,4 +67,24 @@ test('Official BWIBBU ratios are numeric, blanks are unavailable',async()=>{
  const result=await twse.loadFundamentals('2330',{fetcher});
  assert.deepEqual(result.ratios,{date:'2026-10-21',pe:21.5,yieldPct:2.23,pb:7.18});
  assert.equal(result.company,null);
+});
+
+test('After midnight and before session open, use latest completed TWSE close',()=>{
+ const midnight=new Date('2026-10-21T16:45:00Z'); // 2026-10-22 00:45 Taiwan
+ assert.equal(twse.lastCompletedTradingDate(midnight),'2026-10-21');
+ assert.equal(twse.eligibleDate('2026-10-21',midnight),true);
+ assert.equal(twse.eligibleDate('2026-10-20',midnight),false);
+ const morning=new Date('2026-10-22T00:45:00Z'); // 08:45 Taiwan
+ assert.equal(twse.eligibleDate('2026-10-21',morning),true);
+ const nextClose=new Date('2026-10-22T06:10:00Z'); // 14:10 Taiwan
+ assert.equal(twse.eligibleDate('2026-10-21',nextClose),false);
+ assert.equal(twse.eligibleDate('2026-10-22',nextClose),true);
+});
+test('00406A official active ETF close is recognized with ticker suffix',()=>{
+ const q=twse.parseDaily({Date:'1151021',Code:'00406A',Name:'主動中信台灣收益',
+  ClosingPrice:'9.32',OpeningPrice:'9.30',HighestPrice:'9.42',LowestPrice:'9.28',Change:'+0.02'});
+ assert.equal(q.code,'00406A');
+ assert.equal(q.name,'主動中信台灣收益');
+ assert.equal(q.close,9.32);
+ assert.equal(twse.eligibleDate(q.date,new Date('2026-10-21T16:45:00Z')),true);
 });
