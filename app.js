@@ -872,7 +872,8 @@ for(const [id,value] of [['version-sub','台股資產管理 v'+VERSION],['versio
  const el=document.getElementById(id);if(el)el.textContent=value;
 }
 globalThis.SuperETFAppAPI={getQuote:code=>quoteMap[code]||null,
- getHoldings:()=>holdings,getIsMarketOpen:isMarketOpen};
+ getHoldings:()=>holdings,getDividends:()=>dividends,getTransactions:()=>txns,
+ getIsMarketOpen:isMarketOpen};
 console.log('SuperETF v'+VERSION);
 
 })();
