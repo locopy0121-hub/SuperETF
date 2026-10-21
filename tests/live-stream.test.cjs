@@ -246,3 +246,68 @@ test('Close code recorded in diagnostics',()=>{
  assert.match(engine.status().reason,/1008/);
  engine.stop();
 });
+
+
+test('Fugle max connections error enters quota cooldown, not fast reconnect loop',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'error',data:{message:'Maximum number of connections reached',code:429}});
+ assert.equal(engine.status().state,'capacity-wait');
+ assert.equal(engine.isLive(),false);
+ assert.equal(engine.status().capacityFailures,1);
+ assert.equal(engine.status().nextRetryAt-clock.clock(),300000);
+ assert.equal([...clock.timers.values()].length,1);
+ assert.equal([...clock.timers.values()][0].ms,300000);
+ for(let i=0;i<20;i++)engine.start();
+ assert.equal(FakeSocket.instances.length,1,'poll/start must not create parallel sockets');
+ engine.stop('background');
+ assert.equal(clock.timers.size,0,'hidden app must release every retry timer');
+ engine.start();assert.equal(engine.status().state,'capacity-wait');
+ assert.equal([...clock.timers.values()][0].ms,300000);
+ clock.advance(300000);clock.triggerTimeouts();
+ assert.equal(FakeSocket.instances.length,2,'retry once after cooling');
+ engine.stop();
+});
+
+test('Quota capacity error via close reason is classified and does not retry per second',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const ws=FakeSocket.instances[0];ws.open();
+ ws.onclose?.({code:1008,reason:'Maximum number of connections reached',wasClean:false});
+ assert.equal(engine.status().state,'capacity-wait');
+ assert.match(engine.status().lastError,/Maximum number of connections reached/);
+ assert.equal(engine.status().lastCloseCode,1008);
+ assert.equal([...clock.timers.values()][0].ms,300000);
+ engine.stop();
+});
+
+test('Manual LIVE retry waits for release on existing connection; only one socket at a time',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock}=create();
+ engine.start();const first=FakeSocket.instances[0];first.open();
+ first.emit({event:'authenticated'});first.emit({event:'subscribed',data:{symbol:'2330',channel:'trades',id:'x'}});
+ engine.restart();
+ assert.equal(FakeSocket.instances.length,1,'old WebSocket should close before opening replacement');
+ assert.equal(first.readyState,3);
+ assert.equal([...clock.timers.values()][0].ms,2500);
+ clock.advance(2500);clock.triggerTimeouts();
+ assert.equal(FakeSocket.instances.length,2);
+ engine.stop();
+});
+
+test('Server capacity recovered: one socket, confirmed trade updates become genuine LIVE',()=>{
+ FakeSocket.instances=[];
+ const {engine,clock,updates}=create();
+ engine.start();let ws=FakeSocket.instances[0];ws.open();
+ ws.emit({event:'error',data:{message:'Maximum number of connections reached'}});
+ clock.advance(300000);clock.triggerTimeouts();
+ ws=FakeSocket.instances.at(-1);ws.open();ws.emit({event:'authenticated'});
+ assert.equal(engine.status().capacityFailures,0);
+ ws.emit({event:'subscribed',data:{symbol:'2330',channel:'trades',id:'ready'}});
+ ws.emit({event:'data',channel:'trades',data:{symbol:'2330',price:1111,time:1685338200000000}});
+ assert.equal(updates.at(-1).price,1111);
+ assert.equal(engine.status().state,'live');
+ assert.equal(engine.isLive(),true);
+ engine.stop();
+});
