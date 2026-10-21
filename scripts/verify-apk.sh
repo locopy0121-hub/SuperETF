@@ -24,7 +24,12 @@ echo "$BADGING" | grep -F "versionCode='$EXPECTED_CODE'" >/dev/null || {
 }
 "$TOOLS/apksigner" verify --verbose "$APK"
 CERT_INFO="$("$TOOLS/apksigner" verify --print-certs "$APK")"
-CERT="$(printf '%s\n' "$CERT_INFO" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+# apksigner output wording varies by Android build-tools version.
+# The JAR X.509 certificate can also be read independently by keytool.
+CERT="$(keytool -printcert -jarfile "$APK" | sed -n 's/.*SHA256:[[:space:]]*//p' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+if [[ ! "$CERT" =~ ^[A-F0-9]{64}$ ]]; then
+  CERT="$(printf '%s\n' "$CERT_INFO" | sed -n -E 's/.*(SHA-256|SHA256) digest:[[:space:]]*([0-9a-fA-F:]{64,95}).*/\2/Ip' | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+fi
 if [[ ! "$CERT" =~ ^[A-F0-9]{64}$ ]]; then
   echo "::error::APK certificate SHA-256 not detected" >&2; exit 1
 fi
