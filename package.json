@@ -1,12 +1,12 @@
 {
   "name": "superetf",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "private": true,
   "description": "SuperETF Taiwan ETF asset tracker",
   "scripts": {
     "build": "npm test",
-    "test": "node --test tests/*.test.cjs && node --check app.js && node --check fugle-api.js",
-    "typecheck": "node --check app.js && node --check fugle-api.js",
+    "test": "node --test tests/*.test.cjs && node --check app.js && node --check fugle-api.js && node --check live-stream.js",
+    "typecheck": "node --check app.js && node --check fugle-api.js && node --check live-stream.js",
     "cap:sync": "cap sync android"
   },
   "dependencies": {
