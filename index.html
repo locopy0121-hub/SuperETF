@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub" id="version-sub">台股資產管理 v1.3.3</span>
+        <span class="sub" id="version-sub">台股資產管理 v1.4.0</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -120,7 +120,7 @@
       <div class="settings-block">
         <div class="settings-block-head">
           <h3>富果 API 設定</h3>
-          <span class="settings-desc">Market Data v1.0；使用 X-API-KEY Header；富果失敗時自動切換 Yahoo 備援</span>
+          <span class="settings-desc">Market Data v1.0；使用 X-API-KEY Header；盤中採富果 WebSocket LIVE 訂閱；REST / Yahoo 為備援</span>
         </div>
         <div class="settings-form">
           <label class="settings-row">
@@ -147,7 +147,7 @@
           <label class="settings-row">
             <span class="settings-label">代號對應（JSON，選填）</span>
             <textarea id="cfg-fuguo-symbols" rows="3"
-                      placeholder='例：{"0050":"0050","00859":"00859","^TWSE":"IR0001"}'></textarea>
+                      placeholder='例：{"0050":"0050","^TWSE":"IX0001"}'></textarea>
           </label>
 
           <div class="settings-actions">
@@ -182,9 +182,9 @@
       <div class="settings-block">
         <div class="settings-block-head"><h3>關於</h3></div>
         <div class="settings-about">
-          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.3.3</span></div>
+          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.0</span></div>
           <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
-          <div class="about-row"><span class="about-label">本版更新</span><span>代號自動填入證券名稱（含00406A）；富果／證交所／櫃買備援</span></div>
+          <div class="about-row"><span class="about-label">本版更新</span><span>盤中 WebSocket LIVE 逐筆行情；訂閱、重連與備援狀態；修正指數代號</span></div>
         </div>
       </div>
     </section>
@@ -192,11 +192,12 @@
   </main>
 
   <footer class="footer">
-    <span id="version-footer">SuperETF v1.3.3 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
+    <span id="version-footer">SuperETF v1.4.0 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
 <script src="fugle-api.js"></script>
 <script src="security-lookup.js"></script>
+<script src="live-stream.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
