@@ -14,7 +14,8 @@ test('可執行的 JS 入口與禁用虛構損益',()=>{
  assert.ok(html.includes('<script src="app.js"></script>'));
  assert.ok(app.includes('marketLoop();'));
  assert.ok(app.includes('q?.hasReal'));
- assert.ok(app.includes('Prices are fetched, never random-walked'));
+ assert.ok(app.includes('Prices are fetched or streamed, never random-walked'));
+ assert.ok(!app.includes('quotes.forEach(q => q.tick())'));
 });
 test('App 版本一致',()=>{
  const v=require('../package.json').version;
