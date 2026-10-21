@@ -1,9 +1,11 @@
 (() => {
 'use strict';
 
-const VERSION = '1.3.2';
+const VERSION = '1.3.3';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
+const SecurityLookup = globalThis.SuperETFSecurityLookup;
+if (!SecurityLookup) throw new Error('證券名稱查詢工具未載入');
 
 // ---------- API 設定（存於 localStorage，由「設置」tab 管理）----------
 const LS_API  = 'setf_api_config';
@@ -341,21 +343,46 @@ function renderPnl() {
   });
 }
 
+// ---------- Auto-name lookup for holdings and dividends ----------
+const symbolNameOptions=()=>({
+  apiKey:apiCfg.fuguo.enabled?apiCfg.fuguo.apiKey:'',
+  baseUrl:apiCfg.fuguo.baseUrl
+});
+const holdingNameLookup=SecurityLookup.bindCodeName({
+  codeInput:document.getElementById('fh-code'),
+  nameInput:document.getElementById('fh-name'),
+  statusElement:document.getElementById('fh-name-status'),
+  options:symbolNameOptions
+});
+const dividendNameLookup=SecurityLookup.bindCodeName({
+  codeInput:document.getElementById('fd-code'),
+  nameInput:document.getElementById('fd-name'),
+  statusElement:document.getElementById('fd-name-status'),
+  options:symbolNameOptions
+});
+
 // ---------- Portfolio ----------
 document.getElementById('btn-add-holding').addEventListener('click', () => {
   document.getElementById('add-holding-form').classList.toggle('hidden');
 });
 document.getElementById('fh-cancel').addEventListener('click', () => {
+  holdingNameLookup.reset();
   document.getElementById('add-holding-form').classList.add('hidden');
 });
-document.getElementById('fh-save').addEventListener('click', () => {
-  const code = document.getElementById('fh-code').value.trim();
-  const name = document.getElementById('fh-name').value.trim();
+document.getElementById('fh-save').addEventListener('click', async () => {
+  const code = SecurityLookup.codeOf(document.getElementById('fh-code').value);
+  let name = document.getElementById('fh-name').value.trim();
   const qty  = parseInt(document.getElementById('fh-qty').value)   || 0;
   const cost = parseFloat(document.getElementById('fh-cost').value) || 0;
-  if(!/^[0-9]{4,6}[A-Za-z]?$/.test(code)||!(qty>0)||!Number.isFinite(cost)||cost<0)
+  if(!SecurityLookup.isValid(code)||!(qty>0)||!Number.isFinite(cost)||cost<0)
     return alert('請確認代號、股數與非負成本');
-  const item={code:code.toUpperCase(),name:name||code,qty,cost};
+  if(!name){
+    const hit=await holdingNameLookup.resolveNow();
+    if(SecurityLookup.codeOf(document.getElementById('fh-code').value)!==code)return;
+    name=document.getElementById('fh-name').value.trim()||hit?.name||'';
+    if(!name)return alert('尚未取得證券名稱，請手動輸入後再保存');
+  }
+  const item={code,name,qty,cost};
   holdings.push(item);ensureHoldingQuote(item);
   txns.push({code:item.code,name:item.name,qty,price:cost,side:'buy',
     date:new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'})});
@@ -363,6 +390,7 @@ document.getElementById('fh-save').addEventListener('click', () => {
   save(LS.holdings, holdings);
   document.getElementById('add-holding-form').classList.add('hidden');
   ['fh-code','fh-name','fh-qty','fh-cost'].forEach(id => document.getElementById(id).value = '');
+  holdingNameLookup.reset();
   renderPortfolio(); renderPnl();
 });
 
@@ -402,20 +430,28 @@ document.getElementById('btn-add-dividend').addEventListener('click', () => {
   document.getElementById('add-dividend-form').classList.toggle('hidden');
 });
 document.getElementById('fd-cancel').addEventListener('click', () => {
+  dividendNameLookup.reset();
   document.getElementById('add-dividend-form').classList.add('hidden');
 });
-document.getElementById('fd-save').addEventListener('click', () => {
-  const code   = document.getElementById('fd-code').value.trim();
-  const name   = document.getElementById('fd-name').value.trim();
+document.getElementById('fd-save').addEventListener('click', async () => {
+  const code   = SecurityLookup.codeOf(document.getElementById('fd-code').value);
+  let name   = document.getElementById('fd-name').value.trim();
   const qty    = parseInt(document.getElementById('fd-qty').value)    || 0;
   const amount = parseFloat(document.getElementById('fd-amount').value) || 0;
   const date   = document.getElementById('fd-date').value || new Date().toISOString().slice(0, 10);
-  if(!code||!(qty>0)||!Number.isFinite(amount)||amount<0||!/^\d{4}-\d{2}-\d{2}$/.test(date))
+  if(!SecurityLookup.isValid(code)||!(qty>0)||!Number.isFinite(amount)||amount<0||!/^\d{4}-\d{2}-\d{2}$/.test(date))
     return alert('請確認股息代號、股數、金額及日期');
-  dividends.push({ code, name: name || code, qty, amount, date });
+  if(!name){
+    const hit=await dividendNameLookup.resolveNow();
+    if(SecurityLookup.codeOf(document.getElementById('fd-code').value)!==code)return;
+    name=document.getElementById('fd-name').value.trim()||hit?.name||'';
+    if(!name)return alert('尚未取得證券名稱，請手動輸入後再保存');
+  }
+  dividends.push({ code, name, qty, amount, date });
   save(LS.dividends, dividends);
   document.getElementById('add-dividend-form').classList.add('hidden');
   ['fd-code','fd-name','fd-qty','fd-amount','fd-date'].forEach(id => document.getElementById(id).value = '');
+  dividendNameLookup.reset();
   renderDividends(); renderPnl();
 });
 
