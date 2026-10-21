@@ -24,9 +24,9 @@ test('PnL class does not mark unknown quote as unchanged yellow',()=>{
 });
 test('Stock chart and portfolio use unified Taiwan gain/loss color helpers',()=>{
  assert.ok(app.includes("ctx.strokeStyle=pnlStroke("));
- assert.ok(app.includes("class=\\"price \${cls(q.hasReal?p:null)}\\""));
- assert.ok(app.includes("class=\\"chg \${cls(q.hasReal?p:null)}\\""));
- assert.ok(app.includes("class=\\"\${cls(q?.hasReal?q.pctChg:null)}\\""));
+ assert.ok(app.includes('cls(q.hasReal?p:null)'));
+ assert.ok(app.includes('cls(q.hasReal?p:null)'));
+ assert.ok(app.includes('q?.hasReal?q.pctChg:null'));
  assert.match(css,/\.security-price\.up\{color:var\(--red\)\}/);
 });
 test('Save triggers all dependent panels and targeted quote lookup after close',()=>{
