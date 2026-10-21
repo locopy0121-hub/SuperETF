@@ -416,7 +416,7 @@ function renderLive() {
       : '';
     const liveNow=q.dataSource==='live' && liveClient?.isLive();
     const quoteTag=liveNow ? ' · LIVE' : q.dataSource==='live' ? ' · 最後 LIVE 價' : '';
-    return `<div class="live-card">`;
+    return `<div class="live-card">
       <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
       <div class="name">${esc(q.name)}</div>
       <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
