@@ -9,15 +9,15 @@ const capacitor=require('../capacitor.config.json');
 const guard=read('scripts/verify-apk.sh');
 const ignored=read('.gitignore');
 
-test('Version 1.4.5 and original Android identity remain explicit',()=>{
- assert.equal(packageData.version,'1.4.5');
- assert.equal(capacitor.version,'1.4.5');
+test('Version 1.4.6 and original Android identity remain explicit',()=>{
+ assert.equal(packageData.version,'1.4.6');
+ assert.equal(capacitor.version,'1.4.6');
  assert.equal(capacitor.appId,'com.locopy.superetf');
- assert.equal((1*10000+4*100+5),10405);
+ assert.equal((1*10000+4*100+6),10406);
 });
 test('Preview package is isolated from already-installed original signer',()=>{
- assert.match(workflow,/applicationIdSuffix "\.preview"/);
- assert.match(workflow,/com\.locopy\.superetf\.preview/);
+ assert.match(workflow,/applicationIdSuffix "\.preview\.v146"/);
+ assert.match(workflow,/com\.locopy\.superetf\.preview\.v146/);
  assert.match(workflow,/versionNameSuffix "-preview"/);
  assert.match(workflow,/src\/debug\/res\/values\/strings\.xml/);
  assert.match(workflow,/assembleDebug/);
