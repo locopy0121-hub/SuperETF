@@ -52,15 +52,25 @@ function createLiveStream(cfg){
  const enabled=()=>!!cfg.getCredentials()?.enabled&&!!cfg.getCredentials()?.apiKey;
  const marketOpen=cfg.isMarketOpen||(()=>taiwanTradingWindow());
  let socket=null,authenticated=false,desired=false,state='idle',reason='',generation=0,
-  reconnectTimer=null,watchdog=null,authTimer=null,subscribeTimer=null,retry=0,lastFrame=0,lastTick=0,subscriptionDenied=false;
- const sent=new Set(),confirmed=new Set(),lastTickBySymbol=new Map();
+  reconnectTimer=null,watchdog=null,authTimer=null,subscribeTimer=null,retry=0,lastFrame=0,lastTick=0,subscriptionDenied=false,
+  pendingKey=null,attempts=0,lastError='',lastCloseCode=null;
+ const sent=new Set(),confirmed=new Set(),failed=new Map(),lastTickBySymbol=new Map();
+ function sanitize(value){
+  let out=String(value??'').slice(0,220);
+  const key=cfg.getCredentials()?.apiKey;
+  if(key&&typeof key==='string')out=out.split(key).join('[REDACTED]');
+  return out.replace(/(api.?key|token|secret|authorization)\s*[:=]\s*[^,\s;]+/gi,'$1=[REDACTED]').slice(0,140);
+ }
+ function diagnostics(){return {state,reason,lastFrame,lastTick,subscriptions:confirmed.size,
+  authenticated,attempts,lastError,lastCloseCode,pending:pendingKey,
+  failed:[...failed].map(([symbol,why])=>({symbol,reason:why})).slice(-12)};}
  const OPEN=1,CONNECTING=0;
  function isOpen(){return socket?.readyState===OPEN;}
  function isLive(){return state==='live'&&authenticated&&confirmed.size>0&&isOpen()&&lastTick>0&&clock()-lastTick<90000;}
  function setStatus(next,detail=''){
   if(state!==next||reason!==detail){
    state=next;reason=detail;
-   cfg.onStatus?.({state,reason,lastFrame,lastTick,subscriptions:confirmed.size});
+   cfg.onStatus?.(diagnostics());
   }
  }
  function clearTimers(){
@@ -88,16 +98,35 @@ function createLiveStream(cfg){
   return [...unique.values()];
  }
  function refreshSubscriptions(){
-  if(!authenticated||!isOpen())return;
-  for(const t of targets()){
+  if(!authenticated||!isOpen()||pendingKey)return;
+  const next=targets().find(t=>{
    const key=t.channel+':'+t.symbol;
-   if(sent.has(key))continue;
-   sent.add(key);send('subscribe',t);
+   return !sent.has(key)&&!failed.has(key);
+  });
+  if(!next){
+   if(!confirmed.size){
+    const message=failed.size?'訂閱均未成功，最後錯誤：'+(lastError||'訂閱逾時'):'沒有有效訂閱標的';
+    desired=false;clearTimers();cleanupSocket();
+    setStatus('subscription-error',message);
+   }else if(state!=='live')setStatus('subscribed',
+      failed.size?'已訂閱 '+confirmed.size+' 檔，失敗 '+failed.size+' 檔':'已訂閱 '+confirmed.size+' 檔，等待成交');
+   return;
   }
+  const key=next.channel+':'+next.symbol;
+  pendingKey=key;sent.add(key);send('subscribe',next);
+  if(state!=='live'&&state!=='subscribed')setStatus('subscribing','逐檔訂閱：'+key);
+  if(subscribeTimer!==null)clearT(subscribeTimer);
+  subscribeTimer=setT(()=>{
+   subscribeTimer=null;
+   if(pendingKey!==key)return;
+   lastError=key+' 訂閱確認逾時';
+   failed.set(key,lastError);pendingKey=null;
+   refreshSubscriptions();
+  },7000);
  }
  function cleanupSocket(){
   const old=socket;
-  socket=null;authenticated=false;confirmed.clear();sent.clear();
+  socket=null;authenticated=false;pendingKey=null;confirmed.clear();sent.clear();
   if(old){
    old.onopen=old.onclose=old.onerror=old.onmessage=null;
    try{old.close();}catch(error){}
@@ -114,8 +143,8 @@ function createLiveStream(cfg){
   if(!desired||!marketOpen()||!enabled()){stop('outside-hours');return;}
   if(socket&&(socket.readyState===OPEN||socket.readyState===CONNECTING))return;
   if(typeof WebSocketImpl!=='function'){setStatus('unavailable','WebSocket not supported');return;}
-  generation++;const g=generation;
-  authenticated=false;confirmed.clear();sent.clear();subscriptionDenied=false;lastTick=0;
+  generation++;const g=generation;attempts++;
+  authenticated=false;confirmed.clear();sent.clear();failed.clear();pendingKey=null;subscriptionDenied=false;lastTick=0;
   setStatus(retry?'reconnecting':'connecting','建立富果 WebSocket');
   try{socket=new WebSocketImpl(ENDPOINT);}
   catch(e){backoff('socket initialization failed');return;}
@@ -141,27 +170,25 @@ function createLiveStream(cfg){
    if(packet?.event==='authenticated'){
     authenticated=true;retry=0;
     if(authTimer!==null){clearT(authTimer);authTimer=null;}
-    setStatus('subscribing','已驗證，等待訂閱確認');
+    setStatus('subscribing','驗證成功，逐檔確認訂閱');
     refreshSubscriptions();
-    if(subscribeTimer!==null)clearT(subscribeTimer);
-    subscribeTimer=setT(()=>{
-      subscribeTimer=null;
-      if(confirmed.size)return;
-      if(subscriptionDenied){
-        desired=false;cleanupSocket();clearTimers();
-        setStatus('permission-error','富果未授權申請的即時行情頻道');
-      }else backoff('訂閱確認逾時');
-    },12000);
    }else if(packet?.event==='subscribed'){
     const entries=Array.isArray(packet.data)?packet.data:[packet.data];
     for(const entry of entries){
      const key=entry?.channel+':'+entry?.symbol;
-     if(sent.has(key))confirmed.add(key);
+     if(sent.has(key)){
+      confirmed.add(key);failed.delete(key);
+      if(pendingKey===key){
+       pendingKey=null;
+       if(subscribeTimer!==null){clearT(subscribeTimer);subscribeTimer=null;}
+      }
+     }
     }
     if(confirmed.size){
       if(subscribeTimer!==null){clearT(subscribeTimer);subscribeTimer=null;}
       setStatus('subscribed','已訂閱 '+confirmed.size+' 個頻道，等待第一筆即時行情');
     }
+    refreshSubscriptions();
    }else if(packet?.event==='data'&&authenticated){
     const update=parseMarketEvent(packet);
     if(!update||!confirmed.has(update.channel+':'+update.symbol))return;
@@ -172,35 +199,42 @@ function createLiveStream(cfg){
     setStatus('live','已接收逐筆即時行情');
     cfg.onQuote?.(update);
    }else if(packet?.event==='error'){
-    // Only an explicit credential rejection is a terminal authentication error.
-    // Fugle also emits errors for network, rate limits and individual subscriptions.
-    const message=String(packet.data?.message||'').toLowerCase();
-    const code=String(packet.data?.code??packet.data?.status??'');
+    const raw=String(packet.data?.message??packet.message??'未知錯誤');
+    const message=raw.toLowerCase();
+    const code=sanitize(packet.data?.code??packet.data?.status??'');
+    lastError=(code?'['+code+'] ':'')+sanitize(raw);
     const invalid=!authenticated&&(/invalid authentication credentials|invalid api.?key|authentication failed|expired api.?key/.test(message)
       ||(code==='401'&&/auth|key|credential/.test(message)));
-    const permission=/permission|not allowed|not authorized|unauthorized|subscription|channel/.test(message);
     if(invalid){
       desired=false;cleanupSocket();clearTimers();
-      setStatus('auth-error','富果拒絕 WebSocket 金鑰，需核對串流服務授權');
-    }else if(permission&&authenticated){
-      subscriptionDenied=true;
-      if(confirmed.size)setStatus(isLive()?'live':'subscribed','部分頻道權限不足，其餘繼續更新');
-      else setStatus('subscribing','部分頻道遭拒，等待其他訂閱確認');
-    }else if(code==='429'||/rate.limit|too many/.test(message)){
-      backoff('WebSocket 頻率限制');
+      setStatus('auth-error','富果拒絕 LIVE 金鑰（REST 成功不代表串流授權）');
+    }else if(authenticated&&pendingKey){
+      // The current subscription is isolated: never discard already-confirmed streams.
+      const rejected=pendingKey;pendingKey=null;
+      if(subscribeTimer!==null){clearT(subscribeTimer);subscribeTimer=null;}
+      failed.set(rejected,lastError);subscriptionDenied=true;
+      setStatus(confirmed.size?(isLive()?'live':'subscribed'):'subscribing',
+       rejected+' 訂閱失敗：'+lastError);
+      refreshSubscriptions();
+    }else if(authenticated&&confirmed.size){
+      setStatus(isLive()?'live':'subscribed','伺服器回覆：'+lastError);
     }else{
-      backoff('WebSocket 網路或伺服器錯誤，正在重試');
+      backoff('WebSocket 伺服器回覆：'+lastError);
     }
    }
   };
-  ws.onerror=()=>{if(g===generation&&ws===socket)backoff('network error');};
-  ws.onclose=()=>{if(g===generation&&ws===socket)backoff('connection closed');};
+  ws.onerror=()=>{if(g===generation&&ws===socket)backoff('WebSocket 傳輸錯誤（瀏覽器未提供原因）');};
+  ws.onclose=event=>{
+   if(g!==generation||ws!==socket)return;
+   lastCloseCode=Number(event?.code)||1006;
+   backoff('WebSocket 關閉碼 '+lastCloseCode+(event?.wasClean?'（正常）':'（異常）'));
+  };
  }
  function start(){
   desired=true;
   if(!marketOpen()){stop('outside-hours');return;}
   if(!enabled()){stop('disabled');return;}
-  if(socket||reconnectTimer!==null||state==='auth-error'||state==='permission-error')return;
+  if(socket||reconnectTimer!==null||['auth-error','permission-error','subscription-error'].includes(state))return;
   connect();
  }
  function stop(reason='outside-hours'){
@@ -208,12 +242,12 @@ function createLiveStream(cfg){
   setStatus(reason==='disabled'?'disabled':'idle',reason);
  }
  function restart(){
-  generation++;cleanupSocket();clearTimers();retry=0;desired=false;
+  generation++;cleanupSocket();clearTimers();retry=0;attempts=0;lastError='';lastCloseCode=null;failed.clear();desired=false;
   setStatus('idle');
   start();
  }
  return {start,stop,restart,refreshSubscriptions,isLive,
-  status:()=>({state,reason,lastFrame,lastTick,subscriptions:confirmed.size,authenticated}),
+  status:diagnostics,
   endpoint:ENDPOINT};
 }
 const result={ENDPOINT,taiwanTradingWindow,parseMarketEvent,marketTime,createLiveStream};
