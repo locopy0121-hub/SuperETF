@@ -242,7 +242,7 @@ const MarketData = {
     this.lastFugleNoPrice = this.lastFugleHttp200 - valid.length;
     for (const {q, data, value, startedAt} of valid) {
       // Never let a delayed HTTP reply roll back a newer stream update.
-      if(q.dataSource==='live' && q.updatedAt>=startedAt)continue;
+      if(q.dataSource==='live' && (liveClient?.isLive() || q.updatedAt>=startedAt))continue;
       q.applyReal(value.price, value.open, {...value,source:'fuguo'});
       const record = data?.data && typeof data.data === 'object' ? data.data : data;
       if (typeof record.name === 'string' && record.name) q.name = record.name;
@@ -268,7 +268,7 @@ const MarketData = {
     }));
     const valid=responses.filter(Boolean);
     valid.forEach(v=>{
-      if(v.q.dataSource==='live' && v.q.updatedAt>=v.startedAt)return;
+      if(v.q.dataSource==='live' && (liveClient?.isLive() || v.q.updatedAt>=v.startedAt))return;
       v.q.applyReal(v.price,v.open,{kind:'close',previousClose:v.prev,source:'yahoo'});
     });
     return valid.length;
