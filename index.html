@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub" id="version-sub">台股資產管理 v1.4.1</span>
+        <span class="sub" id="version-sub">台股資產管理 v1.4.2</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -180,11 +180,17 @@
       </div>
 
       <div class="settings-block">
+        <div class="settings-block-head"><h3>LIVE WebSocket 診斷</h3></div>
+        <p class="settings-desc">逐檔追蹤認證、訂閱回覆、伺服器錯誤與 WSS 關閉代碼；不顯示 API Key。故障時保留 REST 備援。</p>
+        <pre id="live-diagnostics" class="live-diagnostics" aria-live="polite">等待連線診斷資料</pre>
+        <button class="btn-primary" id="cfg-live-retry" type="button">重新測試 LIVE 連線</button>
+      </div>
+      <div class="settings-block">
         <div class="settings-block-head"><h3>關於</h3></div>
         <div class="settings-about">
-          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.1</span></div>
+          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.2</span></div>
           <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
-          <div class="about-row"><span class="about-label">本版更新</span><span>修正 LIVE 認證誤判、斷線自動重連、頻道權限診斷；收到逐筆才顯示 LIVE</span></div>
+          <div class="about-row"><span class="about-label">本版更新</span><span>逐檔隔離 LIVE 訂閱錯誤；保留 WSS 診斷與重試；移除錯誤示例代號</span></div>
         </div>
       </div>
     </section>
@@ -192,7 +198,7 @@
   </main>
 
   <footer class="footer">
-    <span id="version-footer">SuperETF v1.4.1 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
+    <span id="version-footer">SuperETF v1.4.2 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
 <script src="fugle-api.js"></script>
