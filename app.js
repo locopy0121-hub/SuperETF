@@ -1,13 +1,15 @@
 (() => {
 'use strict';
 
-const VERSION = '1.4.3';
+const VERSION = '1.4.4';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 const LiveEngine = globalThis.SuperETFLive;
 if (!LiveEngine) throw new Error('富果 LIVE 串流核心未載入');
 const SecurityLookup = globalThis.SuperETFSecurityLookup;
 if (!SecurityLookup) throw new Error('證券名稱查詢工具未載入');
+const TWSE = globalThis.SuperETFTWSE;
+if (!TWSE) throw new Error('TWSE 官方收盤資料工具未載入');
 
 // ---------- API 設定（存於 localStorage，由「設置」tab 管理）----------
 const LS_API  = 'setf_api_config';
@@ -152,6 +154,7 @@ function cls(p) { return p > 0.0005 ? 'up' : p < -0.0005 ? 'down' : 'flat'; }
 const SOURCE_LABELS = {
   live: '● LIVE 富果',
   fuguo: '來源：富果 REST',
+  twse: '收盤：TWSE 官方核對',
   fuguo_waiting: '富果 API 已連線（尚無行情）',
   yahoo: '來源：Yahoo Finance',
   mock:  '無可用行情（不使用模擬價）',
@@ -191,12 +194,14 @@ function paintMarketStatus() {
     label='LIVE 串流權限不足 · REST 備援';style='waiting';
   } else if(state==='subscribed') {
     label='LIVE 訂閱成功 · 等待成交';style='connecting';
+  } else if(!isMarketOpen() && quotes.some(q=>q.dataSource==='twse')) {
+    label='TWSE 官方收盤';style='twse';
   } else if(isMarketOpen()&&apiCfg.fuguo.enabled&&apiCfg.fuguo.apiKey) {
     label='富果 REST 備援（非 LIVE）';style='waiting';
   }
   if(badge){badge.textContent=label;badge.className='source-badge '+style;}
   const detail=document.getElementById('live-connection-detail');
-  if(detail)detail.textContent=stream.reason||'';
+  if(detail)detail.textContent=isMarketOpen()?(stream.reason||''):(officialStatus||'收盤後依 TWSE 核對');
   const diagnostics=document.getElementById('live-diagnostics');
   if(diagnostics){
     const rows=[
@@ -269,7 +274,8 @@ const MarketData = {
     this.lastFugleNoPrice = this.lastFugleHttp200 - valid.length;
     for (const {q, data, value, startedAt} of valid) {
       // Never let a delayed HTTP reply roll back a newer stream update.
-      if(q.dataSource==='live' && (liveClient?.isLive() || q.updatedAt>=startedAt))continue;
+      if((q.dataSource==='twse'&&!isMarketOpen())||
+        (q.dataSource==='live'&&(liveClient?.isLive()||q.updatedAt>=startedAt)))continue;
       q.applyReal(value.price, value.open, {...value,source:'fuguo'});
       const record = data?.data && typeof data.data === 'object' ? data.data : data;
       if (typeof record.name === 'string' && record.name) q.name = record.name;
@@ -295,7 +301,8 @@ const MarketData = {
     }));
     const valid=responses.filter(Boolean);
     valid.forEach(v=>{
-      if(v.q.dataSource==='live' && (liveClient?.isLive() || v.q.updatedAt>=v.startedAt))return;
+      if((v.q.dataSource==='twse'&&!isMarketOpen())||
+        (v.q.dataSource==='live'&&(liveClient?.isLive()||v.q.updatedAt>=v.startedAt)))return;
       v.q.applyReal(v.price,v.open,{kind:'close',previousClose:v.prev,source:'yahoo'});
     });
     return valid.length;
@@ -304,11 +311,53 @@ const MarketData = {
     quotes.forEach(q=>{q.updatedInCycle=false;});
     const fu=await this.fetchFuguo();
     const yh=await this.fetchYahoo(quotes.filter(q=>!q.updatedInCycle && !(liveClient?.isLive() && q.dataSource==='live')));
-    if(fu||yh){this.lastUpdated=Date.now();this.setSource(fu?'fuguo':'yahoo');return this.source;}
+    if(fu||yh){this.lastUpdated=Date.now();this.setSource(!isMarketOpen()&&quotes.some(q=>q.dataSource==='twse')?'twse':fu?'fuguo':'yahoo');return this.source;}
     if(this.lastFugleHttp200){this.setSource('fuguo_waiting');return 'fuguo_waiting';}
     this.setSource('mock');return 'mock';
   },
 };
+
+
+let officialStatus='';
+let officialLastCheck=0, officialPending=null;
+async function refreshOfficialClose(force=false){
+  if(isMarketOpen()||TWSE.taipeiParts().minutes<13*60+45)return;
+  if(officialPending)return officialPending;
+  if(!force&&Date.now()-officialLastCheck<300000)return;
+  officialLastCheck=Date.now();
+  officialPending=(async()=>{
+    try{
+      const result=await TWSE.loadOfficial();
+      const today=TWSE.taipeiParts().date;
+      let applied=0;
+      for(const [code,record] of result.records){
+        const q=quoteMap[code];
+        if(!q || (q.dataSource==='twse'&&q.officialDate===record.date))continue;
+        q.applyReal(record.close,record.open,{source:'twse',kind:'close',
+          high:record.high,low:record.low,previousClose:record.previousClose??q.previousClose});
+        q.name=record.name||q.name;
+        q.officialDate=record.date;q.officialRow=record;
+        q.volume=record.volume;q.turnover=record.turnover;q.trades=record.trades;
+        applied++;
+      }
+      if(result.records.size){
+        officialStatus='TWSE 官方收盤交易日 '+(result.latestStockDate||result.latestIndexDate||today);
+        if(quotes.some(q=>q.dataSource==='twse'))MarketData.setSource('twse');
+      }else{
+        const old=result.latestStockDate||result.latestIndexDate;
+        officialStatus=old&&old!==today?'TWSE 尚未公告當日收盤（目前最新 '+old+'）':
+          'TWSE 官方收盤資料待取得'+(result.errors.length?'（網路可能受限）':'');
+      }
+      if(applied){MarketData.lastUpdated=Date.now();paintQuotePanels();}
+    }catch(error){officialStatus='TWSE 查詢失敗，顯示最後有效報價';}
+    finally{
+      const el=document.getElementById('official-close-status');
+      if(el)el.textContent=officialStatus;
+      officialPending=null;
+    }
+  })();
+  return officialPending;
+}
 
 // Fugle socket delivers every trade; REST is bootstrap and degraded fallback.
 let marketSyncPending=false;
@@ -318,6 +367,7 @@ async function marketLoop() {
   marketSyncPending=true;lastRestSync=Date.now();
   try {
     await MarketData.sync();
+    if(!isMarketOpen())await refreshOfficialClose();
     paintQuotePanels();
   } catch(e){
     console.warn('[SuperETF] REST fallback error:',e.message);
@@ -404,11 +454,12 @@ setInterval(()=>{
   }else{
     if(lastSession){
       liveClient.stop();
-      void marketLoop(); // Take final official close snapshot, then hold prices.
+      void marketLoop(); // TWSE date must match current trading session.
     } else if(liveClient.status().state!=='idle'&&liveClient.status().state!=='disabled'){
       liveClient.stop();
     }
   }
+  if(!during)void refreshOfficialClose();
   lastSession=during;
   updateBadge();
   paintMarketStatus();
@@ -419,6 +470,8 @@ document.addEventListener('visibilitychange',()=>{
   }else if(mayStream()){
     liveClient.start();
     void marketLoop();
+  }else if(document.visibilityState==='visible'){
+    void refreshOfficialClose(true);
   }
   updateBadge();paintMarketStatus();
 });
@@ -461,13 +514,13 @@ function renderLive() {
       : '';
     const liveNow=q.dataSource==='live' && liveClient?.isLive()
       && Date.now()-(q.updatedAt||0)<90000;
-    const quoteTag=liveNow ? ' · LIVE' : q.dataSource==='live' ? ' · 最後 LIVE 價' : '';
-    return `<div class="live-card">
+    const quoteTag=liveNow ? ' · LIVE' : q.dataSource==='twse' ? ' · TWSE '+(q.officialDate||'') : q.dataSource==='live' ? ' · 最後 LIVE 價' : '';
+    return `<button type="button" class="live-card" data-code="${esc(q.code)}" aria-label="查看 ${esc(q.name)} 完整資料">
       <div class="code"><span>${esc(q.code.replace('^',''))}</span><span>${typeLabel}</span></div>
       <div class="name">${esc(q.name)}</div>
       <div class="price ${cls(p)}">${fmt(q.price)}${kindLabel ? ' <small style="font-size:11px;color:var(--muted)">' + kindLabel + '</small>' : ''}</div>
       <div class="chg ${cls(p)}">${q.hasReal ? pctFmt(p) : '等待行情'} <span style="color:var(--muted);font-size:11px">開 ${fmt(q.open)} · ${q.hasReal ? esc(q.dataSource)+quoteTag : "未取得"}</span></div>
-    </div>`;
+    </button>`;
   }).join('');
 }
 
@@ -818,6 +871,8 @@ for(const [id,value] of [['version-sub','台股資產管理 v'+VERSION],['versio
  ['version-footer','SuperETF v'+VERSION+' · 主：富果API / 備：Yahoo Finance']]){
  const el=document.getElementById(id);if(el)el.textContent=value;
 }
+globalThis.SuperETFAppAPI={getQuote:code=>quoteMap[code]||null,
+ getHoldings:()=>holdings,getIsMarketOpen:isMarketOpen};
 console.log('SuperETF v'+VERSION);
 
 })();
