@@ -29,6 +29,12 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans TC','Segoe UI
 .live-source-bar{display:flex;align-items:center;gap:8px}
 .source-badge{font-size:11px;padding:4px 10px;border-radius:999px;background:var(--panel-2);border:1px solid var(--border);color:var(--muted);font-weight:600;white-space:nowrap}
 .source-badge.fuguo{color:var(--accent);border-color:var(--accent)}
+.source-badge.live{color:var(--green);border-color:var(--green);background:rgba(34,197,94,.09)}
+.source-badge.connecting{color:var(--accent);border-color:var(--accent)}
+.source-badge.waiting{color:var(--warn);border-color:var(--warn)}
+.live-card .chg{overflow-wrap:anywhere}
+@media(prefers-reduced-motion:no-preference){.source-badge.live::before{content:"";display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--green);margin-right:5px;vertical-align:middle;animation:superetfLivePulse 2s infinite}}
+@keyframes superetfLivePulse{50%{opacity:.3}}
 .source-badge.yahoo{color:var(--green);border-color:var(--green)}
 .source-badge.mock{color:var(--warn);border-color:var(--warn)}
 .last-updated{font-size:11px;color:var(--muted)}
