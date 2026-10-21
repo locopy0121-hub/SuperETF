@@ -148,3 +148,5 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans TC','Segoe UI
 .about-label{font-weight:600}
 
 .footer{text-align:center;padding:24px 0;font-size:12px;color:var(--muted)}
+
+.live-connection-detail{font-size:11px;line-height:1.4;color:var(--muted);max-width:280px;overflow-wrap:anywhere}
