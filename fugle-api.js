@@ -33,6 +33,10 @@
     return code;
   }
 
+  function buildTickerUrl(base, symbol) {
+    return normalizeRestBase(base) + '/stock/intraday/ticker/' +
+      encodeURIComponent(normalizeSymbol(symbol));
+  }
   function buildQuoteUrl(base, symbol) {
     return normalizeRestBase(base) + '/stock/intraday/quote/' +
       encodeURIComponent(normalizeSymbol(symbol));
@@ -96,7 +100,7 @@
     return 'HTTP ' + status + ' [' + code + ']：' + cause;
   }
 
-  const result = { REST_BASE, normalizeRestBase, normalizeSymbol, buildQuoteUrl, parseQuote, quoteStatus, httpError };
+  const result = { REST_BASE, normalizeRestBase, normalizeSymbol, buildTickerUrl, buildQuoteUrl, parseQuote, quoteStatus, httpError };
   if (typeof module === 'object' && module.exports) module.exports = result;
   root.SuperETFFugleAPI = result;
 })(globalThis);
