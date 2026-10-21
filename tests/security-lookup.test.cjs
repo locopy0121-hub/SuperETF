@@ -1,7 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const lookup=require('../security-lookup.js');
 const fugle=require('../fugle-api.js');
+const lookup=require('../security-lookup.js');
 
 test('00406A preserves leading zero and A, auto name is confirmed',async()=>{
   assert.equal(lookup.codeOf(' 00406a '),'00406A');
