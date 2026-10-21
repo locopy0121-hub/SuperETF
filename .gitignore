@@ -3,3 +3,11 @@ dist/
 www/
 android/
 .DS_Store
+
+# Never commit private signing keys, signing passwords, or device backups.
+*.keystore
+*.jks
+*.p12
+*.pfx
+*signing-secrets*
+*.adb-backup.tar
