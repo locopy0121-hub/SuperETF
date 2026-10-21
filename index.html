@@ -13,7 +13,7 @@
       <span class="logo">⚡</span>
       <div>
         <h1>SuperETF</h1>
-        <span class="sub" id="version-sub">台股資產管理 v1.4.5</span>
+        <span class="sub" id="version-sub">台股資產管理 v1.4.6</span>
       </div>
     </div>
     <div class="session-badge" id="session-badge">盤前準備中</div>
@@ -63,6 +63,7 @@
         <h2>庫存管理</h2>
         <button class="btn-primary" id="btn-add-holding">＋ 新增持倉</button>
       </div>
+      <div id="holding-sync-status" class="holding-sync-status" aria-live="polite"></div>
       <div id="add-holding-form" class="form-panel hidden">
         <div class="form-grid">
           <label>代號/ETF<input id="fh-code" placeholder="例：00406A 或 2330" maxlength="7" autocomplete="off" autocapitalize="characters" spellcheck="false"><span id="fh-name-status" class="symbol-lookup-status" aria-live="polite"></span></label>
@@ -194,9 +195,9 @@
       <div class="settings-block">
         <div class="settings-block-head"><h3>關於</h3></div>
         <div class="settings-about">
-          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.5</span></div>
+          <div class="about-row"><span class="about-label">版本</span><span id="version-about">v1.4.6</span></div>
           <div class="about-row"><span class="about-label">App</span><span>SuperETF · 個人開發版本</span></div>
-          <div class="about-row"><span class="about-label">本版更新</span><span>修復 APK 覆蓋安裝的簽章問題：獨立預覽版、固定正式版憑證驗證與資料移轉指引</span></div>
+          <div class="about-row"><span class="about-label">本版更新</span><span>新增持股後立即更新各頁行情與損益；TWSE 盤後／盤前日期修正；紅漲綠跌黃平</span></div>
         </div>
       </div>
     </section>
@@ -204,7 +205,7 @@
   </main>
 
   <footer class="footer">
-    <span id="version-footer">SuperETF v1.4.5 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
+    <span id="version-footer">SuperETF v1.4.6 · 個人開發版本 · 主：富果API / 備：Yahoo Finance / 離線：模擬數據</span>
   </footer>
 </div>
 <script src="fugle-api.js"></script>
