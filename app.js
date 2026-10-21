@@ -1,7 +1,7 @@
 (() => {
 'use strict';
 
-const VERSION = '1.4.4';
+const VERSION = '1.4.5';
 const FugleAPI = globalThis.SuperETFFugleAPI;
 if (!FugleAPI) throw new Error('富果 API 工具未載入');
 const LiveEngine = globalThis.SuperETFLive;
