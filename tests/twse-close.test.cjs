@@ -4,7 +4,7 @@ const EOD='2026-10-21T08:26:00Z'; // Taipei 16:26
 
 test('ROC date parsing and TWSE stock OHLCV including active ETF alphanumeric code',()=>{
  assert.equal(twse.isoDate('1151021'),'2026-10-21');
- assert.equal(twse.isoDate('115/10/21'),null);
+ assert.equal(twse.isoDate('115/10/21'),'2026-10-21');
  assert.equal(twse.isoDate('invalid'),null);
  const row=twse.parseDaily({Date:'1151021',Code:'00415A',Name:'主動群益核心50',
   TradeVolume:'1,234,567',TradeValue:'12,345,678',Transaction:'888',
