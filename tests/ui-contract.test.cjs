@@ -42,3 +42,23 @@ test('LIVE connectivity diagnostics distinguish subscription, auth and LIVE data
  assert.ok(app.includes('LIVE 訂閱成功'));
  assert.equal(stream.ENDPOINT,'wss://api.fugle.tw/marketdata/v1.0/stock/streaming');
 });
+
+
+test('TWSE official EOD is gated by matching session date; last REST cannot overwrite it',()=>{
+ const twse=fs.readFileSync('twse-close.js','utf8');
+ const details=fs.readFileSync('security-details.js','utf8');
+ const workflow=fs.readFileSync('.github/workflows/build-apk.yml','utf8');
+ assert.ok(html.includes('<script src="twse-close.js"></script>'));
+ assert.ok(html.includes('<script src="security-details.js"></script>'));
+ assert.ok(workflow.includes('twse-close.js security-details.js'));
+ assert.ok(html.includes('id="security-detail-dialog"'));
+ assert.ok(html.includes('id="security-detail-close"'));
+ assert.ok(html.includes('id="official-close-status"'));
+ assert.ok(app.includes('refreshOfficialClose'));
+ assert.ok(app.includes("q.dataSource==='twse'&&!isMarketOpen()"));
+ assert.ok(app.includes('q.officialDate===record.date'));
+ assert.ok(app.includes('SuperETFAppAPI'));
+ assert.ok(twse.includes('eligibleDate(record.date,now,holidays)'));
+ assert.ok(details.includes('dialog.showModal()'));
+ assert.ok(details.includes("grid.addEventListener('click'"));
+});
